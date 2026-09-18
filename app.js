@@ -257,7 +257,9 @@ function render(state) {
   }
 
   if (state.drafts && !state.final_file) {
-    imageCard(state.mode === "scratch" ? "Pick one" : "Pick a scene",
+    imageCard(state.mode === "scratch"
+      ? "Click one to download, edit, or use it"
+      : "Click a scene to download, edit, or use it",
       state.drafts, state, state.drafts.length > 2 ? "three" : "two", true);
   }
 
@@ -317,9 +319,10 @@ function imageCard(heading, items, state, cols, pickable) {
         <img src="/api/jobs/${jobId}/file/${it.file}" alt="${esc(it.label)}">
       </span><span class="cap">${esc(it.label)}</span>`;
 
-    b.onclick = pickable
-      ? () => choose(it.index, it.label)
-      : () => zoom(`/api/jobs/${jobId}/file/${it.file}`);
+    b.onclick = () => zoom(`/api/jobs/${jobId}/file/${it.file}`, {
+      label: it.label,
+      use: pickable ? () => choose(it.index, it.label) : null,
+    });
     grid.appendChild(b);
   });
 
@@ -376,7 +379,8 @@ function finalCard(state) {
   $("thread").appendChild(card);
 
   card.querySelector("#finalimg").onclick = () =>
-    zoom(`/api/jobs/${jobId}/file/${state.final_file}`);
+    zoom(`/api/jobs/${jobId}/file/${state.final_file}?v=${(state.versions || []).length}`,
+         { label: "Final image" });
 }
 
 function add(parent, label, fn) {
@@ -428,8 +432,17 @@ async function repeat() {
   watch();
 }
 
-function zoom(src) {
+let lbUse = null;
+
+function zoom(src, opts = {}) {
   $("lbimg").src = src;
+  $("lblabel").textContent = opts.label || "";
+  $("lbdownload").href = src;
+  $("lbdownload").download = (opts.label || "image").replace(/[^a-z0-9]+/gi, "-").toLowerCase() + ".png";
+
+  lbUse = opts.use || null;
+  $("lbuse").hidden = !lbUse;
+
   $("lightbox").hidden = false;
 }
 
@@ -647,6 +660,10 @@ async function applyEdit() {
   body.append("instruction", text);
   body.append("action", "edit");
   body.append("scale", "2");
+
+  // Which file the editor was opened on, so editing draft two edits draft two.
+  const m = (edSource || "").match(/\/file\/([^/?]+)/);
+  if (m) body.append("source", decodeURIComponent(m[1]));
 
   const region = await paintedRegion();
   if (region) body.append("region", region, "region.png");

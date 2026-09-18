@@ -176,6 +176,8 @@ async def enhance(job_id: str,
                   action: str = Form("edit"),
                   scale: float = Form(2.0),
                   presets: str = Form(""),
+                  detail: str = Form(""),
+                  source: str = Form(""),
                   region: UploadFile | None = File(None)):
     """Work on the image this run already has, with no drafting round."""
     if not store.get(job_id):
@@ -186,8 +188,10 @@ async def enhance(job_id: str,
     wanted = [p for p in presets.split(",") if p.strip() in PRESETS]
     painted = await region.read() if region else None
 
+    want_detail = None if detail == "" else detail.lower() in ("1", "true", "yes")
     pool.submit(pipeline.run_enhance, job_id, instruction, action,
-                max(1.0, min(4.0, scale)), wanted, painted)
+                max(1.0, min(4.0, scale)), wanted, painted, want_detail,
+                source.strip() or None)
     return {"ok": True}
 
 

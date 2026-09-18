@@ -335,7 +335,10 @@ def finalise(job_id: str, draft_index: int, extra_instruction: str = "",
         )
 
     # Judged QA.
-    review = models.qa_review(composited, state.get("brief") or {})
+    if config.QA_REVIEW:
+        review = models.qa_review(composited, state.get("brief") or {})
+    else:
+        review = {"usable": True, "issues": [], "fix_instruction": ""}
     if scratch and not review.get("usable", True):
         level = "warn"
     if review.get("issues"):
@@ -370,7 +373,8 @@ def current_image(job_id: str) -> str | None:
 
 
 def enhance(job_id: str, instruction: str, action: str = "edit",
-            scale: float = 2.0, region_png: bytes | None = None) -> dict:
+            scale: float = 2.0, region_png: bytes | None = None,
+            detail: bool | None = None, source_file: str | None = None) -> dict:
     """Change or enlarge the image that already exists, with no drafting round.
 
     This is the path for "add a grey rug", "take the lamp out", "make it
@@ -379,7 +383,17 @@ def enhance(job_id: str, instruction: str, action: str = "edit",
     would in a photo editor.
     """
     state = store.get(job_id)
-    source_name = current_image(job_id)
+
+    # An explicit file wins - that is how editing the second draft edits the
+    # second draft rather than whatever the run considers current. It has to be
+    # a file this run owns; anything else is a path we refuse to touch.
+    if source_file:
+        if "/" in source_file or "\\" in source_file or ".." in source_file \
+                or not (job_dir(job_id) / source_file).exists():
+            raise ValueError("That image doesn't belong to this run.")
+        source_name = source_file
+    else:
+        source_name = current_image(job_id)
     if not source_name:
         raise ValueError("This run has no image to work on yet.")
 
@@ -390,7 +404,7 @@ def enhance(job_id: str, instruction: str, action: str = "edit",
     step = len(versions) + 1
 
     if action == "upscale":
-        result = _upscale(job_id, source, scale)
+        result = _upscale(job_id, source, scale, detail)
     elif region_png:
         result = _edit_region(job_id, source, instruction, region_png)
     else:
@@ -482,7 +496,8 @@ def _edit_region(job_id: str, source: Image.Image, instruction: str,
     return result
 
 
-def _upscale(job_id: str, source: Image.Image, scale: float) -> Image.Image:
+def _upscale(job_id: str, source: Image.Image, scale: float,
+             detail: bool | None = None) -> Image.Image:
     """Enlarge, optionally asking the model to restore detail on the way.
 
     Plain Lanczos makes an image bigger without making it better - it cannot
@@ -495,7 +510,7 @@ def _upscale(job_id: str, source: Image.Image, scale: float) -> Image.Image:
     target = (min(config.MAX_EDGE, int(w * scale)),
               min(config.MAX_EDGE, int(h * scale)))
 
-    if config.UPSCALE_DETAIL_PASS:
+    if config.UPSCALE_DETAIL_PASS if detail is None else detail:
         gen_w, gen_h = imaging.snap_size(*target)
         store.log(job_id, f"{config.FINAL_MODEL} restoring detail at {gen_w}x{gen_h}.")
         try:
@@ -596,12 +611,64 @@ def export(job_id: str, preset_names: list[str]) -> dict:
     return store.update(job_id, stage="exported", exports=written, zip_file="exports.zip")
 
 
+# --- Intent: what did they actually ask for? ---------------------------------
+#
+# A file plus a sentence is not always "put this in a scene". If the sentence
+# says upscale, or says add a rug, running the scene flow ignores them and
+# spends money on drafts nobody asked for. Keyword matching here is deliberate:
+# it is instant and free, and the phrasings are not subtle.
+
+UPSCALE_WORDS = ("resolution", "upscale", "blurry", "blur", "sharpen", "sharper",
+                 "pixel", "bigger", "larger", "enlarge", "hi-res", "hires",
+                 "high res", "quality", "crisp", "clearer")
+EDIT_WORDS = ("add ", "remove ", "take out", "replace ", "change ", "put ",
+              "swap ", "make the ", "make it ", "turn the ", "recolour", "recolor",
+              "prop", "rug", "lamp", "table", "plant", "cushion", "pillow", "curtain")
+SCENE_WORDS = ("scene", "background", "backdrop", "roomset", "room set",
+               "lifestyle", "setting", "studio", "options", "drafts", "variations")
+
+
+def intent_of(note: str) -> str:
+    """'upscale', 'edit' or 'scene'."""
+    t = (note or "").lower()
+    if not t.strip():
+        return "scene"
+    if any(w in t for w in SCENE_WORDS):
+        return "scene"
+    if any(w in t for w in UPSCALE_WORDS):
+        return "upscale"
+    if any(w in t for w in EDIT_WORDS):
+        return "edit"
+    return "scene"
+
+
 # --- Runner ------------------------------------------------------------------
 
 def run_auto(job_id: str, uploads: list[tuple[str, bytes]], note: str):
-    """Ingest through drafts, then stop for a human to choose."""
+    """Ingest, then do what the note asked for.
+
+    A direct instruction skips the brief and the drafts entirely. That is two
+    fewer model calls and no waiting on options that were never wanted.
+    """
     try:
         ingest(job_id, uploads, note)
+        kind = intent_of(note)
+
+        if kind == "upscale":
+            store.log(job_id, "You asked for resolution, so this goes straight to "
+                              "a detail pass and enlargement - no scenes.")
+            store.update(job_id, intent="upscale")
+            enhance(job_id, "", "upscale", 2.0, detail=True)
+            return
+
+        if kind == "edit":
+            store.log(job_id, "You asked for a change, so this edits the photo "
+                              "directly - no scenes.")
+            store.update(job_id, intent="edit")
+            enhance(job_id, note, "edit", 2.0)
+            return
+
+        store.update(job_id, intent="scene")
         analyse(job_id)
         drafts(job_id)
     except Exception as exc:
@@ -622,9 +689,10 @@ def run_describe(job_id: str, description: str):
 
 def run_enhance(job_id: str, instruction: str, action: str, scale: float,
                 presets_wanted: list[str] | None = None,
-                region_png: bytes | None = None):
+                region_png: bytes | None = None, detail: bool | None = None,
+                source_file: str | None = None):
     try:
-        enhance(job_id, instruction, action, scale, region_png)
+        enhance(job_id, instruction, action, scale, region_png, detail, source_file)
         if presets_wanted:
             export(job_id, presets_wanted)
     except Exception as exc:

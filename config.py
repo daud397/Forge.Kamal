@@ -17,7 +17,7 @@ for d in (UPLOADS, RENDERS, DRAFTS, FINALS, EXPORTS):
 # Bump this whenever the code changes. /api/status reports it, so there is a
 # way to confirm which build is actually running rather than inferring it from
 # behaviour - which has already cost us a debugging session once.
-BUILD = "2026-09-18h"
+BUILD = "2026-09-18i"
 
 # --- Models -----------------------------------------------------------------
 REASONING_MODEL = os.getenv("REASONING_MODEL", "gpt-6-astra")
@@ -69,6 +69,12 @@ CAMERA_ANGLES = {
 # generative step and can change what it sharpens. Off means Lanczos only,
 # which enlarges honestly and invents nothing.
 UPSCALE_DETAIL_PASS = os.getenv("UPSCALE_DETAIL_PASS", "").lower() in ("1", "true", "yes")
+
+# The reviewer is a second vision call after every final image. It catches
+# stray text and pasted-on lighting, but it is also ten to twenty seconds on the
+# critical path. Off by default now that speed is the complaint; the measured
+# colour and structure check runs regardless.
+QA_REVIEW = os.getenv("QA_REVIEW", "").lower() in ("1", "true", "yes")
 
 # --- QA tolerances ----------------------------------------------------------
 DELTA_E_PASS = float(os.getenv("DELTA_E_PASS", "2.0"))     # imperceptible to most viewers

@@ -216,11 +216,22 @@ button{font:inherit;cursor:pointer}
 
 .lightbox{
   position:fixed;inset:0;z-index:50;background:#151310ee;
-  display:flex;align-items:center;justify-content:center;padding:34px;
+  display:flex;flex-direction:column;align-items:center;justify-content:center;
+  gap:14px;padding:34px 34px 26px;
 }
-.lightbox img{max-width:100%;max-height:100%;background:var(--well);
+.lightbox img{max-width:100%;max-height:calc(100% - 60px);background:var(--well);
   padding:10px;border-radius:6px}
 .lb-close{position:absolute;top:16px;right:16px}
+.lb-bar{display:flex;align-items:center;gap:8px;flex-wrap:wrap;justify-content:center}
+.lb-label{color:var(--soft);font-size:13px;margin-right:6px}
+.lb-btn{
+  padding:8px 15px;border-radius:9px;font-size:13.5px;font-weight:500;
+  background:var(--panel);border:1px solid var(--rule);color:var(--ink);
+  text-decoration:none;
+}
+.lb-btn:hover{border-color:var(--indigo)}
+.lb-primary{background:var(--indigo);color:#0d1826;border-color:var(--indigo)}
+.lb-primary:hover{background:#6f92cc}
 
 /* ---------- narrow ---------- */
 
