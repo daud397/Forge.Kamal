@@ -1,0 +1,10 @@
+fastapi>=0.115
+uvicorn[standard]>=0.30
+python-multipart>=0.0.9
+openai>=2.0
+pillow>=10.0
+numpy>=1.26
+scipy>=1.11
+trimesh>=4.0
+# Optional: STEP/IGES support via OpenCascade
+# cascadio>=0.0.9

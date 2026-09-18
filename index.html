@@ -1,0 +1,134 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Listing Forge</title>
+<link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+
+<header class="bar">
+  <h1>Listing Forge</h1>
+  <p class="bar-sub">CAD and product photos in, marketplace images out.</p>
+  <div class="bar-right">
+    <span id="spend" class="chip" hidden></span>
+    <span id="mode" class="chip">checking…</span>
+    <form method="post" action="/logout" id="logoutform" hidden style="display:inline">
+      <button class="ghost" type="submit">Sign out</button>
+    </form>
+  </div>
+</header>
+
+<main class="bench">
+
+  <!-- Left rail: intake and run log -->
+  <section class="rail">
+    <div class="block" id="intake">
+      <h2>New run</h2>
+      <label class="drop" id="drop">
+        <input type="file" id="files" multiple hidden
+               accept=".stl,.obj,.ply,.glb,.gltf,.off,.3mf,.step,.stp,.iges,.igs,.png,.jpg,.jpeg,.webp,.tif,.tiff">
+        <span class="drop-line">Drop CAD files and product photos here</span>
+        <span class="drop-hint">STL, OBJ, PLY, GLB, 3MF, STEP · PNG, JPG, WebP, TIFF</span>
+      </label>
+      <ul class="filelist" id="filelist"></ul>
+      <textarea id="note" rows="2" placeholder="Anything the model should know — finish, intended shelf, what the last batch got wrong."></textarea>
+      <button class="go" id="start" disabled>Start run</button>
+    </div>
+
+    <div class="block" id="logblock" hidden>
+      <h2>Run log</h2>
+      <div class="stages" id="stages"></div>
+      <ol class="log" id="log"></ol>
+    </div>
+
+    <div class="block">
+      <h2>Earlier runs</h2>
+      <ul class="jobs" id="jobs"><li class="empty">Nothing yet.</li></ul>
+    </div>
+  </section>
+
+  <!-- Centre: the proofing surface -->
+  <section class="stage">
+    <div class="placeholder" id="placeholder">
+      <p>Upload a model and its photographs to begin.</p>
+      <p class="placeholder-note">Renders, drafts and the final proof appear here on a neutral grey surround so colour judgments aren't biased by the surrounding UI.</p>
+    </div>
+
+    <div id="renders" class="strip" hidden>
+      <h3>Renders from CAD</h3>
+      <div class="strip-row" id="render-row"></div>
+      <p class="strip-note">Each render carries an exact alpha matte, so the product mask needs no segmentation.</p>
+    </div>
+
+    <div id="paint" class="paintbox" hidden>
+      <h3>Mark what must survive</h3>
+      <p class="strip-note">No CAD file in this run, so paint over the product. Everything you leave bare is fair game for the model.</p>
+      <div class="canvas-wrap">
+        <img id="paint-base" alt="">
+        <canvas id="paint-canvas"></canvas>
+      </div>
+      <div class="paint-tools">
+        <label>Brush <input type="range" id="brush" min="8" max="140" value="48"></label>
+        <button class="ghost" id="clearpaint">Clear</button>
+      </div>
+    </div>
+
+    <div id="sheet" class="sheet" hidden>
+      <h3>Draft scenes</h3>
+      <div class="sheet-row" id="sheet-row"></div>
+      <div class="pickbar">
+        <input id="instruction" type="text" placeholder="Optional direction for the final pass — e.g. lower the key light, shorten the shadow.">
+        <button class="go" id="makefinal" disabled>Make final</button>
+      </div>
+    </div>
+
+    <div id="proof" class="proof" hidden>
+      <h3>Final proof</h3>
+      <div class="proof-pair">
+        <figure><img id="proof-before" alt=""><figcaption>Source</figcaption></figure>
+        <figure><img id="proof-after" alt=""><figcaption>Composited result</figcaption></figure>
+      </div>
+    </div>
+  </section>
+
+  <!-- Right rail: chat, brief, QA, exports -->
+  <section class="rail">
+    <div class="block chatblock" id="chatblock">
+      <h2>Direct it</h2>
+      <div class="chat" id="chat">
+        <p class="chat-empty">Start a run, then tell me what you want. Try:<br>
+        “put it on a marble counter with morning window light”<br>
+        “go with the second one but shorten the shadow”<br>
+        “export for shopify and etsy”</p>
+      </div>
+      <div class="chat-input">
+        <textarea id="chatbox" rows="2" placeholder="Describe a scene, pick a draft, ask for a change…" disabled></textarea>
+        <button class="go" id="send" disabled>Send</button>
+      </div>
+    </div>
+
+    <div class="block" id="briefblock" hidden>
+      <h2>Product brief</h2>
+      <div id="brief"></div>
+    </div>
+
+    <div class="block" id="qablock" hidden>
+      <h2>Quality check</h2>
+      <div id="qa"></div>
+    </div>
+
+    <div class="block" id="exportblock">
+      <h2>Export presets</h2>
+      <ul class="presets" id="presets"></ul>
+      <button class="go" id="doexport" disabled>Export selected</button>
+      <div id="exports"></div>
+    </div>
+  </section>
+
+</main>
+
+<script src="/app.js"></script>
+</body>
+</html>
