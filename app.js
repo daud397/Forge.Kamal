@@ -40,8 +40,21 @@ function wire() {
     t.onclick = () => showTab(t.dataset.tab);
   });
   wireEditor();
+
+  $("lbedit").onclick = () => {
+    $("lightbox").hidden = true;
+    openEditor($("lbimg").src);
+  };
+  $("lbuse").onclick = () => {
+    $("lightbox").hidden = true;
+    if (lbUse) lbUse();
+  };
+
+  // Only the backdrop itself closes the viewer. Testing ev.target.id !== "lbimg"
+  // meant every click on the action bar closed it, which made Edit and Use look
+  // broken while Download kept working because it is a plain link.
   $("lightbox").onclick = (ev) => {
-    if (ev.target.id !== "lbimg") $("lightbox").hidden = true;
+    if (ev.target === $("lightbox")) $("lightbox").hidden = true;
   };
 
   const box = $("box");
