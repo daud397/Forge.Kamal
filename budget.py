@@ -100,6 +100,27 @@ def summary() -> dict:
     }
 
 
+def history(days: int = 14) -> list[dict]:
+    """Spend per day, newest first, for the usage view."""
+    with _lock, _conn() as c:
+        rows = c.execute(
+            "SELECT day, kind, COUNT(*) AS calls, COALESCE(SUM(estimate),0) AS total "
+            "FROM spend GROUP BY day, kind ORDER BY day DESC"
+        ).fetchall()
+
+    byday: dict[str, dict] = {}
+    for r in rows:
+        d = byday.setdefault(r["day"], {"day": r["day"], "images": 0,
+                                        "text": 0, "estimate": 0.0})
+        d["images" if r["kind"] == "image" else "text"] += r["calls"]
+        d["estimate"] += float(r["total"])
+
+    out = sorted(byday.values(), key=lambda d: d["day"], reverse=True)[:days]
+    for d in out:
+        d["estimate"] = round(d["estimate"], 3)
+    return out
+
+
 def check(about_to_spend: float = 0.0):
     """Raise before making a call that would breach the cap."""
     if config.DAILY_CAP <= 0:

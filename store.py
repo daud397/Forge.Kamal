@@ -76,24 +76,41 @@ def log(job_id: str, message: str, level: str = "info"):
                   (time.time(), json.dumps(state), job_id))
 
 
-def recent(limit: int = 30) -> list[dict]:
+def recent(limit: int = 60, project: str | None = None) -> list[dict]:
     with _lock, _conn() as c:
         rows = c.execute(
-            "SELECT state FROM jobs ORDER BY created DESC LIMIT ?", (limit,)
+            "SELECT state FROM jobs ORDER BY created DESC LIMIT ?", (limit * 3,)
         ).fetchall()
     out = []
     for r in rows:
         s = json.loads(r["state"])
         brief = s.get("brief") or {}
         qa = s.get("qa") or {}
+        if project is not None and (s.get("project") or "") != project:
+            continue
         out.append({
             "id": s["id"],
             "stage": s.get("stage"),
             "mode": s.get("mode", "edit"),
+            "project": s.get("project") or "",
             "product": brief.get("product_name") or s.get("note") or None,
             "created": s.get("created_at"),
             "thumb": s.get("thumb"),
             "verdict": qa.get("level"),
             "exported": len(s.get("exports") or []),
         })
-    return out
+    return out[:limit]
+
+
+def projects() -> list[dict]:
+    """Every project name in use, with how many runs sit under each."""
+    with _lock, _conn() as c:
+        rows = c.execute("SELECT state FROM jobs").fetchall()
+
+    counts: dict[str, int] = {}
+    for r in rows:
+        name = (json.loads(r["state"]).get("project") or "").strip()
+        if name:
+            counts[name] = counts.get(name, 0) + 1
+
+    return [{"name": n, "runs": counts[n]} for n in sorted(counts)]

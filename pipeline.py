@@ -10,6 +10,7 @@ import traceback
 import zipfile
 from pathlib import Path
 
+import numpy as np
 from PIL import Image
 
 import cad, config, imaging, models, store
@@ -369,7 +370,7 @@ def current_image(job_id: str) -> str | None:
 
 
 def enhance(job_id: str, instruction: str, action: str = "edit",
-            scale: float = 2.0) -> dict:
+            scale: float = 2.0, region_png: bytes | None = None) -> dict:
     """Change or enlarge the image that already exists, with no drafting round.
 
     This is the path for "add a grey rug", "take the lamp out", "make it
@@ -390,6 +391,8 @@ def enhance(job_id: str, instruction: str, action: str = "edit",
 
     if action == "upscale":
         result = _upscale(job_id, source, scale)
+    elif region_png:
+        result = _edit_region(job_id, source, instruction, region_png)
     else:
         result = _edit_freely(job_id, source, instruction)
 
@@ -438,6 +441,45 @@ def _edit_freely(job_id: str, source: Image.Image, instruction: str) -> Image.Im
         "no text, no logos, no watermarks."
     )
     return models.final_edit(source, prompt, None, config.FINAL_SIZE)
+
+
+def _edit_region(job_id: str, source: Image.Image, instruction: str,
+                 region_png: bytes) -> Image.Image:
+    """Change only what was painted, and put the rest back pixel for pixel.
+
+    Two things happen here. The mask tells the model which area it may touch,
+    and the composite afterwards guarantees the rest is untouched - because a
+    masked edit still re-encodes the whole frame, so without the composite the
+    untouched areas drift slightly on every pass. Over three or four edits that
+    drift is visible.
+    """
+    if not instruction.strip():
+        raise ValueError("Say what should change in the area you painted.")
+
+    size = config.FINAL_SIZE
+    editable = imaging.mask_from_strokes(region_png, source.size)
+
+    # mask_from_strokes marks what was painted. Here painted means "change
+    # this", which is the opposite of the product mask, so it gets inverted
+    # before being handed over as the region to keep.
+    keep = Image.fromarray(255 - np.asarray(editable))
+
+    store.log(job_id, f"{config.FINAL_MODEL} editing the painted area only: "
+                      f"{instruction.strip()[:80]}")
+
+    mask_png = imaging.edit_mask(keep, size)
+    edited = models.final_edit(
+        source,
+        f"{instruction.strip()}\n\nChange only the masked area. Match the "
+        "lighting direction, colour temperature, grain and shadow behaviour of "
+        "the surrounding photograph so the edit is invisible at the seam. No "
+        "text, no logos, no watermarks.",
+        mask_png, size)
+
+    result = imaging.composite_preserve(source, edited, keep, feather=2.0)
+    store.log(job_id, "Everything outside the painted area restored from the "
+                      "previous version.")
+    return result
 
 
 def _upscale(job_id: str, source: Image.Image, scale: float) -> Image.Image:
@@ -579,9 +621,10 @@ def run_describe(job_id: str, description: str):
 
 
 def run_enhance(job_id: str, instruction: str, action: str, scale: float,
-                presets_wanted: list[str] | None = None):
+                presets_wanted: list[str] | None = None,
+                region_png: bytes | None = None):
     try:
-        enhance(job_id, instruction, action, scale)
+        enhance(job_id, instruction, action, scale, region_png)
         if presets_wanted:
             export(job_id, presets_wanted)
     except Exception as exc:

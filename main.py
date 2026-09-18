@@ -123,8 +123,27 @@ def describe_job(description: str = Form(...)):
 
 
 @app.get("/api/jobs")
-def list_jobs():
-    return {"jobs": store.recent()}
+def list_jobs(project: str | None = None):
+    return {"jobs": store.recent(project=project)}
+
+
+@app.get("/api/projects")
+def list_projects():
+    return {"projects": store.projects()}
+
+
+@app.post("/api/jobs/{job_id}/project")
+def set_project(job_id: str, name: str = Form("")):
+    """File a run under a project, or clear it with an empty name."""
+    if not store.get(job_id):
+        raise HTTPException(404, "No such run.")
+    store.update(job_id, project=name.strip()[:60])
+    return {"ok": True}
+
+
+@app.get("/api/usage")
+def usage():
+    return {"summary": budget.summary(), "days": budget.history()}
 
 
 @app.get("/api/jobs/{job_id}")
@@ -152,11 +171,12 @@ async def finalise(job_id: str,
 
 
 @app.post("/api/jobs/{job_id}/enhance")
-def enhance(job_id: str,
-            instruction: str = Form(""),
-            action: str = Form("edit"),
-            scale: float = Form(2.0),
-            presets: str = Form("")):
+async def enhance(job_id: str,
+                  instruction: str = Form(""),
+                  action: str = Form("edit"),
+                  scale: float = Form(2.0),
+                  presets: str = Form(""),
+                  region: UploadFile | None = File(None)):
     """Work on the image this run already has, with no drafting round."""
     if not store.get(job_id):
         raise HTTPException(404, "No such run.")
@@ -164,8 +184,10 @@ def enhance(job_id: str,
         raise HTTPException(400, "action must be 'edit' or 'upscale'.")
 
     wanted = [p for p in presets.split(",") if p.strip() in PRESETS]
+    painted = await region.read() if region else None
+
     pool.submit(pipeline.run_enhance, job_id, instruction, action,
-                max(1.0, min(4.0, scale)), wanted)
+                max(1.0, min(4.0, scale)), wanted, painted)
     return {"ok": True}
 
 

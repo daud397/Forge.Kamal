@@ -23,6 +23,7 @@ async function init() {
   setInterval(refreshSpend, 30000);
 
   wire();
+  $("thread").appendChild(introBlock());
   loadJobs();
 }
 
@@ -33,6 +34,12 @@ function wire() {
   $("newrun").onclick = startFresh;
   $("toggleside").onclick = () => $("sidebar").classList.toggle("hidden");
   $("lbclose").onclick = () => { $("lightbox").hidden = true; };
+  $("fileunder").onclick = fileUnderProject;
+
+  document.querySelectorAll(".tab").forEach(t => {
+    t.onclick = () => showTab(t.dataset.tab);
+  });
+  wireEditor();
   $("lightbox").onclick = (ev) => {
     if (ev.target.id !== "lbimg") $("lightbox").hidden = true;
   };
@@ -58,7 +65,8 @@ function startFresh() {
   lastRender = "";
   $("files").value = "";
   $("attached").hidden = true;
-  $("threadtitle").textContent = "Listing Forge";
+  $("threadtitle").textContent = "Kamal Forge";
+  $("fileunder").hidden = true;
   $("thread").innerHTML = "";
   $("thread").appendChild(introBlock());
   loadJobs();
@@ -223,6 +231,9 @@ function render(state) {
 
   const brief = state.brief || {};
   $("threadtitle").textContent = brief.product_name || state.note || "New run";
+  $("fileunder").hidden = false;
+  $("fileunder").textContent = state.project
+    ? `Project: ${state.project}` : "File under a project";
 
   const thread = $("thread");
   thread.innerHTML = "";
@@ -340,6 +351,8 @@ function finalCard(state) {
   const acts = document.createElement("div");
   acts.className = "actions";
 
+  add(acts, "Edit image", () =>
+    openEditor(`/api/jobs/${jobId}/file/${state.final_file}?v=${(state.versions || []).length}`));
   add(acts, "Enlarge 2×", () => enhance("upscale"));
   add(acts, "Run again", repeat);
 
@@ -423,7 +436,10 @@ function zoom(src) {
 // ---------------------------------------------------------------- sidebar
 
 async function loadJobs() {
-  const { jobs } = await (await fetch("/api/jobs")).json();
+  const url = projectFilter === null
+    ? "/api/jobs"
+    : `/api/jobs?project=${encodeURIComponent(projectFilter)}`;
+  const { jobs } = await (await fetch(url)).json();
   const box = $("jobs");
 
   if (!jobs.length) {
@@ -476,4 +492,171 @@ async function refreshSpend() {
 function esc(s) {
   return String(s ?? "").replace(/[&<>"']/g, c =>
     ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+}
+
+
+// ---------------------------------------------------------------- sidebar tabs
+
+let projectFilter = null;
+
+function showTab(name) {
+  document.querySelectorAll(".tab").forEach(t =>
+    t.classList.toggle("on", t.dataset.tab === name));
+  ["runs", "projects", "usage"].forEach(p =>
+    $("pane-" + p).hidden = p !== name);
+
+  if (name === "projects") loadProjects();
+  if (name === "usage") loadUsage();
+}
+
+async function loadProjects() {
+  const { projects } = await (await fetch("/api/projects")).json();
+  const box = $("projects");
+
+  const all = `<button class="proj ${projectFilter === null ? "on" : ""}" data-name="">
+      <span>All runs</span></button>`;
+
+  box.innerHTML = all + (projects.length
+    ? projects.map(p => `<button class="proj ${projectFilter === p.name ? "on" : ""}"
+        data-name="${esc(p.name)}">
+        <span>${esc(p.name)}</span><span class="count">${p.runs}</span></button>`).join("")
+    : `<p class="empty">No projects yet. Open a run and use “File under a project”.</p>`);
+
+  box.querySelectorAll(".proj").forEach(b => {
+    b.onclick = () => {
+      projectFilter = b.dataset.name || null;
+      loadProjects();
+      loadJobs();
+      showTab("runs");
+    };
+  });
+}
+
+async function loadUsage() {
+  const data = await (await fetch("/api/usage")).json();
+  const s = data.summary;
+
+  const rows = (data.days || []).map(d => `
+    <tr><td class="day">${esc(d.day)}</td>
+        <td>${d.images} images</td>
+        <td>$${d.estimate.toFixed(2)}</td></tr>`).join("");
+
+  $("usage").innerHTML = `
+    <div class="big">$${s.today.toFixed(2)}</div>
+    <div class="cap">of $${s.cap.toFixed(2)} today${s.enforced ? "" : " (no cap set)"}</div>
+    <table>${rows || `<tr><td class="day">Nothing yet</td></tr>`}</table>
+    <p class="note">Estimated from the per-call figures in settings, not billed
+    amounts. Compare against your OpenAI usage page and correct
+    COST_PER_IMAGE if they drift apart.</p>`;
+}
+
+async function fileUnderProject() {
+  if (!jobId) return;
+  const name = prompt("File this run under which project?", projectFilter || "");
+  if (name === null) return;
+
+  const body = new FormData();
+  body.append("name", name);
+  await fetch(`/api/jobs/${jobId}/project`, { method: "POST", body });
+  loadProjects();
+  loadJobs();
+}
+
+// ---------------------------------------------------------------- editor
+
+let edCtx = null, edPainting = false, edSource = null;
+
+function wireEditor() {
+  const canvas = $("edpaint");
+  edCtx = canvas.getContext("2d");
+
+  const at = ev => {
+    const r = canvas.getBoundingClientRect();
+    return [(ev.clientX - r.left) * canvas.width / r.width,
+            (ev.clientY - r.top) * canvas.height / r.height];
+  };
+
+  const stroke = ev => {
+    if (!edPainting) return;
+    const [x, y] = at(ev);
+    const size = Number($("edbrush").value) *
+                 canvas.width / canvas.getBoundingClientRect().width;
+    edCtx.fillStyle = "rgba(91,127,185,0.45)";
+    edCtx.beginPath();
+    edCtx.arc(x, y, size / 2, 0, Math.PI * 2);
+    edCtx.fill();
+    markPainted();
+  };
+
+  canvas.addEventListener("pointerdown", ev => {
+    edPainting = true; canvas.setPointerCapture(ev.pointerId); stroke(ev);
+  });
+  canvas.addEventListener("pointermove", stroke);
+  canvas.addEventListener("pointerup", () => { edPainting = false; });
+  canvas.addEventListener("pointercancel", () => { edPainting = false; });
+
+  $("edclear").onclick = () => {
+    edCtx.clearRect(0, 0, canvas.width, canvas.height);
+    $("edstate").textContent = "Whole frame";
+  };
+  $("edclose").onclick = () => { $("editor").hidden = true; };
+  $("edapply").onclick = applyEdit;
+  $("edtext").addEventListener("keydown", ev => {
+    if (ev.key === "Enter") { ev.preventDefault(); applyEdit(); }
+  });
+}
+
+function markPainted() {
+  $("edstate").textContent = "Painted area only";
+}
+
+function openEditor(src) {
+  const img = $("edimg");
+  const canvas = $("edpaint");
+  edSource = src;
+
+  img.onload = () => {
+    canvas.width = img.naturalWidth;
+    canvas.height = img.naturalHeight;
+    canvas.style.width = img.clientWidth + "px";
+    canvas.style.height = img.clientHeight + "px";
+    edCtx.clearRect(0, 0, canvas.width, canvas.height);
+    $("edstate").textContent = "Whole frame";
+  };
+  img.src = src;
+
+  $("edtext").value = "";
+  $("editor").hidden = false;
+  setTimeout(() => $("edtext").focus(), 60);
+}
+
+function paintedRegion() {
+  const canvas = $("edpaint");
+  const data = edCtx.getImageData(0, 0, canvas.width, canvas.height).data;
+  for (let i = 3; i < data.length; i += 4) {
+    if (data[i] > 0) return new Promise(r => canvas.toBlob(r, "image/png"));
+  }
+  return Promise.resolve(null);
+}
+
+async function applyEdit() {
+  const text = $("edtext").value.trim();
+  if (!text) { $("edtext").focus(); return; }
+
+  const body = new FormData();
+  body.append("instruction", text);
+  body.append("action", "edit");
+  body.append("scale", "2");
+
+  const region = await paintedRegion();
+  if (region) body.append("region", region, "region.png");
+
+  $("edapply").disabled = true;
+  await fetch(`/api/jobs/${jobId}/enhance`, { method: "POST", body });
+  $("edapply").disabled = false;
+  $("editor").hidden = true;
+
+  say("user", (region ? "Edit the painted area: " : "Edit: ") + text);
+  lastRender = "";
+  watch();
 }

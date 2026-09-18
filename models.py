@@ -246,21 +246,20 @@ def generate_scratch(prompts: list[str],
 
     from imaging import size_string
     client = _client()
-    budget.check_images(len(prompts))
+    dims = size_string(*size)
 
-    out = []
-    for prompt in prompts:
+    def one(prompt):
         result = client.images.generate(
             model=config.DRAFT_MODEL,
             prompt=f"{prompt}\n\nCommercial product photograph. No text, no logos, "
                    f"no watermarks, no visible brand marks, no hands or people.",
-            size=size_string(*size),
+            size=dims,
             quality=config.DRAFT_QUALITY,
             output_format="png",
         )
-        budget.record("image", config.DRAFT_MODEL)
-        out.append((prompt, _decode(result.data[0])))
-    return out
+        return prompt, _decode(result.data[0])
+
+    return _in_parallel(one, prompts, config.DRAFT_MODEL)
 
 
 def qa_review(final: Image.Image, brief: dict) -> dict:
@@ -295,6 +294,26 @@ PRESERVE_CLAUSE = (
 )
 
 
+def _in_parallel(fn, prompts: list[str], model: str):
+    """Run the image calls together and keep the requested order.
+
+    These calls spend almost all their time waiting on the API, so generating
+    three scenes one after another costs three times the latency for no reason.
+    Budget is checked once up front, so a batch that would breach the cap is
+    refused whole rather than halfway through.
+    """
+    from concurrent.futures import ThreadPoolExecutor
+
+    budget.check_images(len(prompts))
+
+    with ThreadPoolExecutor(max_workers=min(len(prompts), 4)) as pool:
+        results = list(pool.map(fn, prompts))
+
+    for _ in results:
+        budget.record("image", model)
+    return results
+
+
 def _decode(item) -> Image.Image:
     return Image.open(io.BytesIO(base64.b64decode(item.b64_json))).convert("RGBA")
 
@@ -308,26 +327,24 @@ def generate_drafts(source: Image.Image, prompts: list[str],
 
     from imaging import size_string
     client = _client()
-    out = []
 
     buf = io.BytesIO()
     source.convert("RGBA").save(buf, format="PNG")
+    payload = buf.getvalue()
+    dims = size_string(*size)
 
-    budget.check_images(len(prompts))
-
-    for prompt in prompts:
-        buf.seek(0)
+    def one(prompt):
         result = client.images.edit(
             model=config.DRAFT_MODEL,
-            image=[("source.png", buf.getvalue(), "image/png")],
+            image=[("source.png", payload, "image/png")],
             prompt=f"{prompt}\n\n{PRESERVE_CLAUSE}",
-            size=size_string(*size),
+            size=dims,
             quality=config.DRAFT_QUALITY,
             output_format="png",
         )
-        budget.record("image", config.DRAFT_MODEL)
-        out.append((prompt, _decode(result.data[0])))
-    return out
+        return prompt, _decode(result.data[0])
+
+    return _in_parallel(one, prompts, config.DRAFT_MODEL)
 
 
 def final_edit(source: Image.Image, prompt: str, mask_png: bytes | None,

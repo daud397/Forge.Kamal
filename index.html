@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Listing Forge</title>
+<title>Kamal Forge</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Archivo:wght@400;500;600;700&display=swap" rel="stylesheet">
@@ -12,8 +12,37 @@
 <body>
 
 <aside class="sidebar" id="sidebar">
-  <button class="new" id="newrun">New run</button>
-  <div class="history" id="jobs"></div>
+
+  <div class="brand">
+    <svg class="kmark" viewBox="0 0 40 40" aria-hidden="true">
+      <rect width="40" height="40" rx="9" fill="var(--indigo)"/>
+      <path d="M13 9.5v21M13 20.5l11-11M17.6 16.4L27.5 30.5"
+            stroke="#121c2b" stroke-width="3.4" stroke-linecap="round" fill="none"/>
+    </svg>
+    <div class="brand-text">
+      <span class="brand-name">Kamal Forge</span>
+      <span class="brand-sub">Kamal Textile Mills</span>
+    </div>
+  </div>
+
+  <button class="new" id="newrun">New chat</button>
+
+  <nav class="tabs">
+    <button class="tab on" data-tab="runs">Runs</button>
+    <button class="tab" data-tab="projects">Projects</button>
+    <button class="tab" data-tab="usage">Usage</button>
+  </nav>
+
+  <div class="panes">
+    <div class="pane" id="pane-runs"><div class="history" id="jobs"></div></div>
+    <div class="pane" id="pane-projects" hidden>
+      <div class="projects" id="projects"></div>
+    </div>
+    <div class="pane" id="pane-usage" hidden>
+      <div class="usage" id="usage"></div>
+    </div>
+  </div>
+
   <div class="sidefoot">
     <span id="spend" class="meter" hidden></span>
     <span id="mode" class="meter">checking</span>
@@ -25,22 +54,12 @@
 
 <main class="main">
   <header class="top">
-    <button class="icon" id="toggleside" aria-label="Toggle runs">☰</button>
-    <span class="title" id="threadtitle">Listing Forge</span>
+    <button class="icon" id="toggleside" aria-label="Toggle sidebar">☰</button>
+    <span class="title" id="threadtitle">Kamal Forge</span>
+    <button class="quiet" id="fileunder" hidden>File under a project</button>
   </header>
 
-  <div class="thread" id="thread">
-    <div class="intro" id="intro">
-      <h1>What are we photographing?</h1>
-      <p>Describe a product and it gets made from nothing, or attach a photo or
-         CAD file to work from the real thing.</p>
-      <div class="chips">
-        <button class="chip" data-say="a matte charcoal linen cushion cover, 45cm square, hidden zip">A charcoal linen cushion cover</button>
-        <button class="chip" data-say="a stonewashed sand cotton duvet set on a made bed, UK bedroom">A sand cotton duvet set</button>
-        <button class="chip" data-say="a grey cheetah print duvet set on a made bed in a modern UK bedroom">A grey cheetah print duvet set</button>
-      </div>
-    </div>
-  </div>
+  <div class="thread" id="thread"></div>
 
   <div class="composer-wrap">
     <div class="composer">
@@ -51,9 +70,39 @@
       <button class="send" id="send" aria-label="Send">↑</button>
     </div>
     <p class="pending" id="attached" hidden></p>
-    <p class="fineprint">Images cost money to make. Check colours against the real product before listing.</p>
+    <p class="fineprint">Images cost money to make. Check colours against the real cloth before listing.</p>
   </div>
 </main>
+
+<!-- Editor -->
+<div class="editor" id="editor" hidden>
+  <div class="ed-head">
+    <span class="ed-title">Edit image</span>
+    <span class="ed-hint">Paint over what should change, or leave it blank to let it work on the whole frame.</span>
+    <button class="icon" id="edclose" aria-label="Close">✕</button>
+  </div>
+
+  <div class="ed-stage">
+    <div class="ed-canvas" id="edcanvas">
+      <img id="edimg" alt="">
+      <canvas id="edpaint"></canvas>
+    </div>
+  </div>
+
+  <div class="ed-foot">
+    <div class="ed-tools">
+      <label for="edbrush">Brush</label>
+      <input type="range" id="edbrush" min="10" max="200" value="70">
+      <button class="quiet" id="edclear">Clear</button>
+      <span class="ed-state" id="edstate">Whole frame</span>
+    </div>
+    <div class="ed-do">
+      <input type="text" id="edtext"
+             placeholder="change the duvet print to a grey cheetah print, keep the drape">
+      <button class="send wide" id="edapply">Apply</button>
+    </div>
+  </div>
+</div>
 
 <div class="lightbox" id="lightbox" hidden>
   <button class="icon lb-close" id="lbclose" aria-label="Close">✕</button>
