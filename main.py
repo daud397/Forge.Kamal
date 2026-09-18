@@ -110,6 +110,18 @@ async def create_job(files: list[UploadFile] = File(...), note: str = Form("")):
     return {"job_id": job_id}
 
 
+@app.post("/api/jobs/describe")
+def describe_job(description: str = Form(...)):
+    """Start a run with no upload - just a sentence about the product."""
+    text = description.strip()
+    if len(text) < 3:
+        raise HTTPException(400, "Describe the product in a few words.")
+
+    job_id = store.create({"created_at": None, "mode": "scratch"})
+    pool.submit(pipeline.run_describe, job_id, text)
+    return {"job_id": job_id}
+
+
 @app.get("/api/jobs")
 def list_jobs():
     return {"jobs": store.recent()}

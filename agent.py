@@ -51,9 +51,10 @@ TOOLS = [
                                 "prompt": {
                                     "type": "string",
                                     "description": (
-                                        "Full scene description: surface, backdrop, light "
-                                        "direction and quality, colour temperature, shadow "
-                                        "behaviour, camera framing. No product description."
+                                        "Full scene: surface, backdrop, light direction and "
+                                        "quality, colour temperature, shadow behaviour, "
+                                        "framing. Include the product itself only in "
+                                        "scratch mode."
                                     ),
                                 },
                             },
@@ -131,6 +132,18 @@ TOOLS = [
 
 SYSTEM = """You run an image pipeline for someone preparing their own product listings.
 
+The job runs in one of two modes and they behave differently:
+
+- **edit** - they uploaded a CAD file or photograph. The product is real. Scene
+  prompts describe the BACKGROUND ONLY, because the product's own pixels are
+  composited back from their file afterwards. Describing the product in a prompt
+  wastes a generation.
+- **scratch** - no file, only a description. Nothing exists yet, so scene
+  prompts describe the whole photograph including the product. There is no
+  fidelity check, because there is nothing to be faithful to.
+
+Read `mode` from the job state and write prompts accordingly.
+
 You have the current job state. Use tools to act; answer in plain text when the
 person is asking rather than instructing.
 
@@ -164,6 +177,7 @@ def _context(state: dict) -> str:
 
     ctx = {
         "stage": state.get("stage"),
+        "mode": state.get("mode", "edit"),
         "has_cad_render": bool(state.get("renders")),
         "mask_source": state.get("mask_source"),
         "product": brief.get("product_name"),
@@ -194,7 +208,7 @@ def _run_set_scenes(job_id: str, args: dict, pool) -> str:
     store.update(job_id, brief=brief)
     store.log(job_id, f"Scenes replaced from chat: {', '.join(s['label'] for s in scenes)}.")
 
-    pool.submit(_guarded, job_id, pipeline.drafts, job_id)
+    pool.submit(_guarded, job_id, pipeline.drafts_for_mode, job_id)
     noun = "draft" if len(scenes) == 1 else "drafts"
     return f"Generating {len(scenes)} new {noun}: {', '.join(s['label'] for s in scenes)}."
 

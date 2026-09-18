@@ -4,128 +4,170 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Listing Forge</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Archivo:wght@400;500;600;700&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="/styles.css">
 </head>
 <body>
 
 <header class="bar">
-  <h1>Listing Forge</h1>
-  <p class="bar-sub">CAD and product photos in, marketplace images out.</p>
+  <div class="mark">
+    <span class="mark-name">Listing Forge</span>
+    <span class="mark-sub">CAD and product photos in, marketplace images out</span>
+  </div>
   <div class="bar-right">
-    <span id="spend" class="chip" hidden></span>
-    <span id="mode" class="chip">checking…</span>
-    <form method="post" action="/logout" id="logoutform" hidden style="display:inline">
-      <button class="ghost" type="submit">Sign out</button>
+    <span id="spend" class="meter" hidden></span>
+    <span id="mode" class="meter">checking</span>
+    <form method="post" action="/logout" id="logoutform" hidden>
+      <button class="quiet" type="submit">Sign out</button>
     </form>
   </div>
 </header>
 
 <main class="bench">
 
-  <!-- Left rail: intake and run log -->
-  <section class="rail">
-    <div class="block" id="intake">
+  <!-- Left: intake and the run log -->
+  <aside class="rail rail-left">
+    <section class="panel" id="intake">
       <h2>New run</h2>
+
       <label class="drop" id="drop">
         <input type="file" id="files" multiple hidden
                accept=".stl,.obj,.ply,.glb,.gltf,.off,.3mf,.step,.stp,.iges,.igs,.png,.jpg,.jpeg,.webp,.tif,.tiff">
-        <span class="drop-line">Drop CAD files and product photos here</span>
-        <span class="drop-hint">STL, OBJ, PLY, GLB, 3MF, STEP · PNG, JPG, WebP, TIFF</span>
+        <span class="drop-line">Drop a CAD file or product photo</span>
+        <span class="drop-formats">STL OBJ PLY GLB 3MF STEP, PNG JPG WebP TIFF</span>
       </label>
-      <ul class="filelist" id="filelist"></ul>
-      <textarea id="note" rows="2" placeholder="Anything the model should know — finish, intended shelf, what the last batch got wrong."></textarea>
-      <button class="go" id="start" disabled>Start run</button>
-    </div>
 
-    <div class="block" id="logblock" hidden>
-      <h2>Run log</h2>
-      <div class="stages" id="stages"></div>
+      <ul class="manifest" id="filelist"></ul>
+
+      <textarea id="note" rows="2"
+        placeholder="Anything worth knowing — the finish, the shelf it sits on, what the last batch got wrong."></textarea>
+
+      <button class="act" id="start" disabled>Start run</button>
+    </section>
+
+    <section class="panel" id="logblock" hidden>
+      <h2>Progress</h2>
+      <div class="track" id="stages"></div>
       <ol class="log" id="log"></ol>
-    </div>
+    </section>
 
-    <div class="block">
+    <section class="panel">
       <h2>Earlier runs</h2>
-      <ul class="jobs" id="jobs"><li class="empty">Nothing yet.</li></ul>
-    </div>
-  </section>
+      <ul class="jobs" id="jobs"><li class="nothing">Nothing yet</li></ul>
+    </section>
+  </aside>
 
-  <!-- Centre: the proofing surface -->
+  <!-- Centre: the viewing wells -->
   <section class="stage">
-    <div class="placeholder" id="placeholder">
-      <p>Upload a model and its photographs to begin.</p>
-      <p class="placeholder-note">Renders, drafts and the final proof appear here on a neutral grey surround so colour judgments aren't biased by the surrounding UI.</p>
+
+    <div class="opening" id="placeholder">
+      <h1>Two ways in</h1>
+      <div class="doors">
+        <article class="door">
+          <h3>You have the product</h3>
+          <p>Drop a CAD file or a photograph on the left. The render carries an
+             exact outline, so the product's own pixels survive every edit
+             untouched. Only the scene around it changes.</p>
+        </article>
+        <article class="door">
+          <h3>You don't, yet</h3>
+          <p>Describe it on the right and it gets photographed from nothing.
+             Useful before the sample arrives, or for a colourway you haven't
+             made.</p>
+          <button class="act door-act" id="jumptochat">Describe a product</button>
+        </article>
+      </div>
+      <p class="opening-foot">Images sit on neutral grey throughout, so nothing
+         around them pulls your eye off the colour.</p>
     </div>
 
-    <div id="renders" class="strip" hidden>
-      <h3>Renders from CAD</h3>
-      <div class="strip-row" id="render-row"></div>
-      <p class="strip-note">Each render carries an exact alpha matte, so the product mask needs no segmentation.</p>
-    </div>
+    <section id="renders" class="reel" hidden>
+      <h2>Renders</h2>
+      <div class="reel-row" id="render-row"></div>
+      <p class="aside">Three angles, each with an exact outline taken from the
+         geometry. Nothing was guessed at the edges.</p>
+    </section>
 
-    <div id="paint" class="paintbox" hidden>
-      <h3>Mark what must survive</h3>
-      <p class="strip-note">No CAD file in this run, so paint over the product. Everything you leave bare is fair game for the model.</p>
-      <div class="canvas-wrap">
+    <section id="paint" class="reel" hidden>
+      <h2>Mark what must survive</h2>
+      <p class="aside">No CAD file in this run, so paint over the product.
+         Anything you leave bare is the model's to change.</p>
+      <div class="well well-paint">
         <img id="paint-base" alt="">
         <canvas id="paint-canvas"></canvas>
       </div>
-      <div class="paint-tools">
-        <label>Brush <input type="range" id="brush" min="8" max="140" value="48"></label>
-        <button class="ghost" id="clearpaint">Clear</button>
+      <div class="tools">
+        <label for="brush">Brush</label>
+        <input type="range" id="brush" min="8" max="140" value="48">
+        <button class="quiet" id="clearpaint">Clear</button>
       </div>
-    </div>
+    </section>
 
-    <div id="sheet" class="sheet" hidden>
-      <h3>Draft scenes</h3>
-      <div class="sheet-row" id="sheet-row"></div>
-      <div class="pickbar">
-        <input id="instruction" type="text" placeholder="Optional direction for the final pass — e.g. lower the key light, shorten the shadow.">
-        <button class="go" id="makefinal" disabled>Make final</button>
+    <section id="sheet" class="reel" hidden>
+      <h2 id="sheet-title">Drafts</h2>
+      <div class="sheet" id="sheet-row"></div>
+      <div class="choose">
+        <input id="instruction" type="text"
+               placeholder="Optional change for the final pass — lower the key light, shorten the shadow">
+        <button class="act" id="makefinal" disabled>Make final</button>
       </div>
-    </div>
+    </section>
 
-    <div id="proof" class="proof" hidden>
-      <h3>Final proof</h3>
-      <div class="proof-pair">
-        <figure><img id="proof-before" alt=""><figcaption>Source</figcaption></figure>
-        <figure><img id="proof-after" alt=""><figcaption>Composited result</figcaption></figure>
+    <section id="proof" class="reel" hidden>
+      <h2>Final</h2>
+      <div class="pair">
+        <figure>
+          <div class="well"><img id="proof-before" alt=""></div>
+          <figcaption id="before-label">Source</figcaption>
+        </figure>
+        <figure>
+          <div class="well"><img id="proof-after" alt=""></div>
+          <figcaption>Result</figcaption>
+        </figure>
       </div>
-    </div>
+    </section>
+
   </section>
 
-  <!-- Right rail: chat, brief, QA, exports -->
-  <section class="rail">
-    <div class="block chatblock" id="chatblock">
-      <h2>Direct it</h2>
+  <!-- Right: chat, brief, check, exports -->
+  <aside class="rail rail-right">
+    <section class="panel talk" id="chatblock">
+      <h2>Tell it what you want</h2>
       <div class="chat" id="chat">
-        <p class="chat-empty">Start a run, then tell me what you want. Try:<br>
-        “put it on a marble counter with morning window light”<br>
-        “go with the second one but shorten the shadow”<br>
-        “export for shopify and etsy”</p>
+        <div class="starters">
+          <p>Describe a product and it gets made from nothing:</p>
+          <button class="starter" data-say="a matte charcoal linen cushion cover, 45cm square, hidden zip">a matte charcoal linen cushion cover, 45cm square</button>
+          <button class="starter" data-say="a stonewashed sand-coloured cotton duvet set on a made bed">a stonewashed sand cotton duvet set</button>
+          <p>Or, once a run is going:</p>
+          <button class="starter" data-say="put it on a marble counter with morning window light">put it on a marble counter with morning light</button>
+          <button class="starter" data-say="go with the second one but shorten the shadow">go with the second one, shorten the shadow</button>
+        </div>
       </div>
-      <div class="chat-input">
-        <textarea id="chatbox" rows="2" placeholder="Describe a scene, pick a draft, ask for a change…" disabled></textarea>
-        <button class="go" id="send" disabled>Send</button>
+      <div class="composer">
+        <textarea id="chatbox" rows="2" placeholder="Describe a product, or direct a run in progress"></textarea>
+        <button class="act" id="send">Send</button>
       </div>
-    </div>
+    </section>
 
-    <div class="block" id="briefblock" hidden>
-      <h2>Product brief</h2>
+    <section class="panel" id="briefblock" hidden>
+      <h2>Brief</h2>
       <div id="brief"></div>
-    </div>
+    </section>
 
-    <div class="block" id="qablock" hidden>
-      <h2>Quality check</h2>
+    <section class="panel" id="qablock" hidden>
+      <h2>Check</h2>
       <div id="qa"></div>
-    </div>
+    </section>
 
-    <div class="block" id="exportblock">
-      <h2>Export presets</h2>
+    <section class="panel">
+      <h2>Export</h2>
       <ul class="presets" id="presets"></ul>
-      <button class="go" id="doexport" disabled>Export selected</button>
+      <button class="act" id="doexport" disabled>Export selected</button>
       <div id="exports"></div>
-    </div>
-  </section>
+    </section>
+  </aside>
 
 </main>
 

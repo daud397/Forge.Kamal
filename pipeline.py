@@ -95,6 +95,56 @@ def ingest(job_id: str, uploads: list[tuple[str, bytes]], note: str = "") -> dic
     )
 
 
+# --- Stage 1b: start from a description, no upload --------------------------
+
+def describe(job_id: str, description: str) -> dict:
+    """No file, no render. Astra writes the brief from the seller's sentence."""
+    store.update(job_id, stage="briefing")
+    store.log(job_id, f"No source file. {config.REASONING_MODEL} writing a brief "
+                      "from the description.")
+
+    brief = models.invent(description)
+    store.log(job_id, f"Brief: {brief.get('product_name')} - "
+                      f"{len(brief.get('scene_prompts', []))} treatments.")
+
+    return store.update(
+        job_id,
+        stage="briefed",
+        mode="scratch",
+        note=description,
+        brief=brief,
+        renders={},
+        photos=[],
+        base_image=None,
+        mask_source="none",
+        created_at=time.strftime("%Y-%m-%d %H:%M"),
+    )
+
+
+def drafts_scratch(job_id: str) -> dict:
+    """Text to image. Nothing is being preserved, so there is no mask."""
+    state = store.get(job_id)
+    brief = state.get("brief") or {}
+    store.update(job_id, stage="drafting")
+
+    scenes = brief.get("scene_prompts", [])[:config.DRAFT_COUNT]
+    if not scenes:
+        raise ValueError("The brief contains no scenes to generate.")
+
+    store.log(job_id, f"{config.DRAFT_MODEL} generating {len(scenes)} images at "
+                      f"{config.DRAFT_SIZE[0]}x{config.DRAFT_SIZE[1]}.")
+
+    results = models.generate_scratch([sc["prompt"] for sc in scenes])
+    out = []
+    for i, (prompt, img) in enumerate(results):
+        name = _save(job_id, img, f"draft_{i}.png")
+        out.append({"index": i, "label": scenes[i].get("label", f"Option {i+1}"),
+                    "prompt": prompt, "file": name})
+
+    store.log(job_id, f"{len(out)} images ready.")
+    return store.update(job_id, stage="drafted", drafts=out)
+
+
 # --- Stage 2: analyse --------------------------------------------------------
 
 def analyse(job_id: str) -> dict:
@@ -112,6 +162,12 @@ def analyse(job_id: str) -> dict:
 
 
 # --- Stage 3: drafts ---------------------------------------------------------
+
+def drafts_for_mode(job_id: str) -> dict:
+    """Regenerate using whichever path this job started on."""
+    state = store.get(job_id)
+    return drafts_scratch(job_id) if state.get("mode") == "scratch" else drafts(job_id)
+
 
 def drafts(job_id: str) -> dict:
     state = store.get(job_id)
@@ -150,11 +206,19 @@ def finalise(job_id: str, draft_index: int, extra_instruction: str = "",
     if not chosen:
         raise ValueError(f"No draft with index {draft_index}.")
 
-    base = _load(job_id, state["base_image"])
+    scratch = state.get("mode") == "scratch"
+
+    # In scratch mode the approved draft IS the source: the refinement pass
+    # works on the image the seller picked, not on any uploaded file.
+    base = _load(job_id, chosen["file"] if scratch else state["base_image"])
     size = config.FINAL_SIZE
 
     # Where does the product mask come from?
-    if painted_mask:
+    if scratch:
+        product_mask = None
+        store.log(job_id, "Generated image, so there is nothing to protect. "
+                          "The refinement pass runs unmasked.")
+    elif painted_mask:
         product_mask = imaging.mask_from_strokes(painted_mask, base.size)
         store.log(job_id, "Using the painted mask as the preserved region.")
     elif state.get("mask_source") == "cad_alpha":
@@ -165,8 +229,13 @@ def finalise(job_id: str, draft_index: int, extra_instruction: str = "",
         store.log(job_id, "No mask available. The edit runs unmasked and the product is not protected.", "warn")
 
     mask_png = imaging.edit_mask(product_mask, size) if product_mask else None
+    if scratch:
+        prompt_lead = "Refine this photograph. Keep the product, its colour, "\
+                      "material and framing exactly as they are."
+    else:
+        prompt_lead = None
 
-    prompt = chosen["prompt"]
+    prompt = prompt_lead if prompt_lead else chosen["prompt"]
     if extra_instruction.strip():
         prompt = f"{prompt}\n\nAdditional direction: {extra_instruction.strip()}"
 
@@ -193,17 +262,29 @@ def finalise(job_id: str, draft_index: int, extra_instruction: str = "",
         else Image.new("L", composited.size, 255)
 
     stats = imaging.region_stats(base, edited, measure_mask)
-    level, notes = imaging.verdict(stats)
+
+    if scratch:
+        # Nothing was supplied to be faithful to, so colour difference against
+        # the draft measures how much the refinement changed - which is often
+        # the point. Reporting it as a failure would be meaningless. The numbers
+        # stay visible as information; the verdict comes from the reviewer.
+        level = "info"
+        notes = [f"Refinement moved the image {stats['delta_e_mean']} dE2000 on "
+                 f"average from the draft you approved. There is no source file "
+                 f"to check fidelity against, so this is information, not a test."]
+    else:
+        level, notes = imaging.verdict(stats)
     store.log(job_id, f"Model output: dE2000 mean {stats['delta_e_mean']}, "
                       f"p95 {stats['delta_e_p95']}, SSIM {stats['ssim_product']} -> {level}.")
 
     # What survives after compositing. Should be near zero; if it isn't, the
     # mask and the render have drifted out of alignment.
     residual = imaging.region_stats(base, composited, measure_mask)
-    store.log(job_id, f"After composite: dE2000 mean {residual['delta_e_mean']}, "
-                      f"SSIM {residual['ssim_product']}.")
+    if not scratch:
+        store.log(job_id, f"After composite: dE2000 mean {residual['delta_e_mean']}, "
+                          f"SSIM {residual['ssim_product']}.")
 
-    if level != "pass" and residual["delta_e_mean"] < config.DELTA_E_PASS:
+    if not scratch and level != "pass" and residual["delta_e_mean"] < config.DELTA_E_PASS:
         notes.append(
             "The composite corrected this: delivered product pixels come from your "
             "source file, so the shipped image is clean. The drift is a signal that "
@@ -212,6 +293,8 @@ def finalise(job_id: str, draft_index: int, extra_instruction: str = "",
 
     # Judged QA.
     review = models.qa_review(composited, state.get("brief") or {})
+    if scratch and not review.get("usable", True):
+        level = "warn"
     if review.get("issues"):
         for issue in review["issues"]:
             store.log(job_id, f"Review: {issue}", "warn")
@@ -285,6 +368,16 @@ def run_auto(job_id: str, uploads: list[tuple[str, bytes]], note: str):
     except Exception as exc:
         store.log(job_id, f"{type(exc).__name__}: {exc}", "error")
         store.log(job_id, traceback.format_exc(limit=3), "error")
+        store.update(job_id, stage="failed", error=str(exc))
+
+
+def run_describe(job_id: str, description: str):
+    """Description through to drafts, then stop for a human to choose."""
+    try:
+        describe(job_id, description)
+        drafts_scratch(job_id)
+    except Exception as exc:
+        store.log(job_id, f"{type(exc).__name__}: {exc}", "error")
         store.update(job_id, stage="failed", error=str(exc))
 
 

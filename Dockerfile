@@ -17,9 +17,10 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY *.py ./
 COPY index.html styles.css app.js ./
 
-# Mount a persistent volume here or every job is lost on redeploy.
+# Attach a Railway volume mounted at /app/data. No VOLUME directive here:
+# Railway's builder rejects it outright and the build fails validation before
+# any layer is built. The mount is configured in the dashboard instead.
 RUN mkdir -p /app/data
-
 
 ENV PORT=8000
 EXPOSE 8000

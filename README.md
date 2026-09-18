@@ -78,6 +78,21 @@ detail that wasn't there. Generation deliberately stays under OpenAI's
 3,686,400-pixel experimental threshold and the resize carries it the rest of the
 way — cheaper and more predictable than generating at 4K.
 
+## Two ways to start a run
+
+**From a file.** Drop a CAD file or a photograph. The product is real, so scene
+prompts describe the background only and the product's own pixels are composited
+back afterwards. Colour and geometry are measured against the source.
+
+**From a description.** Type what the product is into the chat with no run open.
+Astra writes a full brief and three complete photographs are generated from
+nothing. Useful before a sample exists, or for a colourway you haven't made yet.
+
+The second path has no fidelity check, because there is nothing to be faithful
+to. The numbers still appear, measuring how far the refinement pass moved from
+the option you approved, but they are reported as information rather than a
+pass or fail. The verdict there comes from the reviewer instead.
+
 ## Driving it by chat
 
 The right-hand panel takes plain instructions instead of clicks. Astra is given

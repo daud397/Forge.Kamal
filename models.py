@@ -70,6 +70,28 @@ BRIEF_SCHEMA = {
     },
 }
 
+INVENT_SYSTEM = """You brief a product photography pipeline for e-commerce listings.
+
+There is no source image. The seller has described what they want and you are
+writing the brief that will be generated from scratch.
+
+Rules:
+- Take the seller's description literally. Do not upgrade their product into
+  something more premium, and do not add features they did not mention.
+- dominant_colours: the colours you are specifying, as hex. If the seller named
+  a colour, match it; otherwise choose and commit, because the generator needs a
+  decision rather than a range.
+- must_preserve: the details that must survive later refinement passes.
+- scene_prompts: three complete photographs. Unlike the edit path, these DO
+  describe the product, because nothing exists yet. Each should read like a
+  brief to a photographer: the product and its material and finish, then the
+  surface, backdrop, light direction and quality, colour temperature, shadow
+  behaviour, lens and framing. Vary the three meaningfully - not three angles of
+  one idea, but three different treatments a buyer would react to differently.
+- No text, no logos, no brand marks, no packaging copy, no human hands or faces.
+- risks: ways this specific product tends to be rendered wrong.
+"""
+
 ANALYST_SYSTEM = """You brief a product photography pipeline for e-commerce listings.
 
 You receive renders or photographs of one product. Produce a factual brief.
@@ -160,6 +182,42 @@ def analyse(images: list[Image.Image], user_note: str = "") -> dict:
         })
 
     return _chat_json(ANALYST_SYSTEM, parts, BRIEF_SCHEMA)
+
+
+def invent(description: str) -> dict:
+    """Astra turns a sentence from the seller into a full generation brief."""
+    if not live():
+        return _mock_invented_brief(description)
+
+    parts = [{"type": "text",
+              "text": f"The seller wants images of this product:\n\n{description}"}]
+    return _chat_json(INVENT_SYSTEM, parts, BRIEF_SCHEMA)
+
+
+def generate_scratch(prompts: list[str],
+                     size: tuple[int, int] = None) -> list[tuple[str, Image.Image]]:
+    """Text to image, no source. Flare, one call per scene."""
+    size = size or config.DRAFT_SIZE
+    if not live():
+        return [(p, _mock_invented_scene(p, size)) for p in prompts]
+
+    from imaging import size_string
+    client = _client()
+    budget.check_images(len(prompts))
+
+    out = []
+    for prompt in prompts:
+        result = client.images.generate(
+            model=config.DRAFT_MODEL,
+            prompt=f"{prompt}\n\nCommercial product photograph. No text, no logos, "
+                   f"no watermarks, no visible brand marks, no hands or people.",
+            size=size_string(*size),
+            quality=config.DRAFT_QUALITY,
+            output_format="png",
+        )
+        budget.record("image", config.DRAFT_MODEL)
+        out.append((prompt, _decode(result.data[0])))
+    return out
 
 
 def qa_review(final: Image.Image, brief: dict) -> dict:
@@ -291,6 +349,63 @@ def _mock_brief(images: list[Image.Image]) -> dict:
         ],
         "risks": ["Mock mode: no model has seen this product."],
     }
+
+
+def _mock_invented_brief(description: str) -> dict:
+    words = description.strip().rstrip(".")
+    return {
+        "product_name": (words[:60] or "Unnamed product") + " (mock mode)",
+        "category": "general merchandise",
+        "materials": ["as described"],
+        "dominant_colours": [{"name": "placeholder", "hex": "#8a8f98"}],
+        "surface_pattern": "not analysed in mock mode",
+        "must_preserve": ["silhouette", "colour", "material finish"],
+        "scene_prompts": [
+            {"label": "Studio sweep",
+             "prompt": f"{words}, on a seamless light grey studio sweep, soft "
+                       "overhead key from the upper left, single soft contact shadow."},
+            {"label": "Warm oak",
+             "prompt": f"{words}, on an oiled oak tabletop, late afternoon window "
+                       "light raking from the right, long soft shadow."},
+            {"label": "Editorial concrete",
+             "prompt": f"{words}, on a polished concrete plinth against a deep "
+                       "charcoal wall, hard directional key, crisp shadow."},
+        ],
+        "risks": ["Mock mode: nothing has been generated from this description."],
+    }
+
+
+def _mock_invented_scene(prompt: str, size: tuple[int, int]) -> Image.Image:
+    """A placeholder frame so the scratch path is clickable offline."""
+    seed = int(hashlib.sha256(prompt.encode()).hexdigest()[:8], 16)
+    rng = random.Random(seed)
+    w, h = size
+
+    top = tuple(rng.randint(60, 210) for _ in range(3))
+    bottom = tuple(max(0, c - rng.randint(40, 100)) for c in top)
+    grad = np.zeros((h, w, 3), dtype=np.uint8)
+    for i, (t, b) in enumerate(zip(top, bottom)):
+        grad[..., i] = np.linspace(t, b, h, dtype=np.uint8)[:, None]
+    img = Image.fromarray(grad, "RGB").convert("RGBA")
+
+    # A simple object so the frame reads as a product shot rather than a gradient.
+    body = tuple(rng.randint(40, 200) for _ in range(3))
+    d = ImageDraw.Draw(img)
+    bw, bh = int(w * 0.34), int(h * 0.42)
+    x, y = (w - bw) // 2, int(h * 0.34)
+
+    shadow = Image.new("RGBA", (w, h), (0, 0, 0, 0))
+    ImageDraw.Draw(shadow).ellipse(
+        [x - bw * 0.1, y + bh * 0.94, x + bw * 1.1, y + bh * 1.12], fill=(0, 0, 0, 100))
+    img = Image.alpha_composite(img, shadow.filter(ImageFilter.GaussianBlur(bw * 0.04)))
+
+    d = ImageDraw.Draw(img)
+    d.rounded_rectangle([x, y, x + bw, y + bh], radius=int(bw * 0.12),
+                        fill=(*body, 255))
+    d.rounded_rectangle([x + bw * 0.08, y + bh * 0.06, x + bw * 0.42, y + bh * 0.5],
+                        radius=int(bw * 0.06),
+                        fill=tuple(min(255, c + 45) for c in body) + (90,))
+    return img
 
 
 def _mock_scene(source: Image.Image, prompt: str, size: tuple[int, int],
