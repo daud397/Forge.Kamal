@@ -19,7 +19,7 @@ COPY index.html styles.css app.js ./
 
 # Mount a persistent volume here or every job is lost on redeploy.
 RUN mkdir -p /app/data
-VOLUME ["/app/data"]
+
 
 ENV PORT=8000
 EXPOSE 8000
