@@ -11,183 +11,54 @@
 </head>
 <body>
 
-<header class="bar">
-  <div class="mark">
-    <span class="mark-name">Listing Forge</span>
-    <span class="mark-sub">CAD and product photos in, marketplace images out</span>
-  </div>
-  <div class="bar-right">
+<aside class="sidebar" id="sidebar">
+  <button class="new" id="newrun">New run</button>
+  <div class="history" id="jobs"></div>
+  <div class="sidefoot">
     <span id="spend" class="meter" hidden></span>
     <span id="mode" class="meter">checking</span>
     <form method="post" action="/logout" id="logoutform" hidden>
       <button class="quiet" type="submit">Sign out</button>
     </form>
   </div>
-</header>
+</aside>
 
-<main class="bench">
+<main class="main">
+  <header class="top">
+    <button class="icon" id="toggleside" aria-label="Toggle runs">☰</button>
+    <span class="title" id="threadtitle">Listing Forge</span>
+  </header>
 
-  <!-- Left: intake and the run log -->
-  <aside class="rail rail-left">
-    <section class="panel" id="intake">
-      <h2>New run</h2>
-
-      <label class="drop" id="drop">
-        <input type="file" id="files" multiple hidden
-               accept=".stl,.obj,.ply,.glb,.gltf,.off,.3mf,.step,.stp,.iges,.igs,.png,.jpg,.jpeg,.webp,.tif,.tiff">
-        <span class="drop-line">Drop a CAD file or product photo</span>
-        <span class="drop-formats">STL OBJ PLY GLB 3MF STEP, PNG JPG WebP TIFF</span>
-      </label>
-
-      <ul class="manifest" id="filelist"></ul>
-
-      <textarea id="note" rows="2"
-        placeholder="Anything worth knowing — the finish, the shelf it sits on, what the last batch got wrong."></textarea>
-
-      <button class="act" id="start" disabled>Start run</button>
-    </section>
-
-    <section class="panel" id="logblock" hidden>
-      <h2>Progress</h2>
-      <div class="track" id="stages"></div>
-      <ol class="log" id="log"></ol>
-    </section>
-
-    <section class="panel">
-      <h2>Earlier runs</h2>
-      <div class="history" id="jobs"><p class="nothing">Nothing yet</p></div>
-    </section>
-  </aside>
-
-  <!-- Centre: the viewing wells -->
-  <section class="stage">
-
-    <div class="opening" id="placeholder">
-      <h1>Two ways in</h1>
-      <div class="doors">
-        <article class="door">
-          <h3>You have the product</h3>
-          <p>Drop a CAD file or a photograph on the left. The render carries an
-             exact outline, so the product's own pixels survive every edit
-             untouched. Only the scene around it changes.</p>
-        </article>
-        <article class="door">
-          <h3>You don't, yet</h3>
-          <p>Describe it on the right and it gets photographed from nothing.
-             Useful before the sample arrives, or for a colourway you haven't
-             made.</p>
-          <button class="act door-act" id="jumptochat">Describe a product</button>
-        </article>
+  <div class="thread" id="thread">
+    <div class="intro" id="intro">
+      <h1>What are we photographing?</h1>
+      <p>Describe a product and it gets made from nothing, or attach a photo or
+         CAD file to work from the real thing.</p>
+      <div class="chips">
+        <button class="chip" data-say="a matte charcoal linen cushion cover, 45cm square, hidden zip">A charcoal linen cushion cover</button>
+        <button class="chip" data-say="a stonewashed sand cotton duvet set on a made bed, UK bedroom">A sand cotton duvet set</button>
+        <button class="chip" data-say="a grey cheetah print duvet set on a made bed in a modern UK bedroom">A grey cheetah print duvet set</button>
       </div>
-      <p class="opening-foot">Images sit on neutral grey throughout, so nothing
-         around them pulls your eye off the colour.</p>
     </div>
+  </div>
 
-    <section id="renders" class="reel" hidden>
-      <h2>Renders</h2>
-      <div class="reel-row" id="render-row"></div>
-      <p class="aside">Three angles, each with an exact outline taken from the
-         geometry. Nothing was guessed at the edges.</p>
-    </section>
-
-    <section id="paint" class="reel" hidden>
-      <h2>Mark what must survive</h2>
-      <p class="aside">No CAD file in this run, so paint over the product.
-         Anything you leave bare is the model's to change.</p>
-      <div class="well well-paint">
-        <img id="paint-base" alt="">
-        <canvas id="paint-canvas"></canvas>
-      </div>
-      <div class="tools">
-        <label for="brush">Brush</label>
-        <input type="range" id="brush" min="8" max="140" value="48">
-        <button class="quiet" id="clearpaint">Clear</button>
-      </div>
-    </section>
-
-    <section id="sheet" class="reel" hidden>
-      <h2 id="sheet-title">Drafts</h2>
-      <div class="sheet" id="sheet-row"></div>
-      <div class="choose">
-        <input id="instruction" type="text"
-               placeholder="Optional change for the final pass — lower the key light, shorten the shadow">
-        <button class="act" id="makefinal" disabled>Make final</button>
-      </div>
-    </section>
-
-    <section id="work" class="reel" hidden>
-      <h2>Work on this image</h2>
-      <p class="aside">Direct changes to the picture as it stands, with no
-         drafting round. Nothing is masked here, so the product itself can move
-         — check the result against the real thing.</p>
-      <div class="choose">
-        <input id="workbox" type="text"
-               placeholder="add a grey flatweave rug under the bed and a walnut side table on the left">
-        <button class="act" id="doedit">Apply</button>
-      </div>
-      <div class="tools">
-        <button class="quiet" id="doupscale">Enlarge 2x</button>
-        <button class="quiet" id="dorerun">Run again from scratch</button>
-        <span class="tool-note" id="worksize"></span>
-      </div>
-      <ol class="versions" id="versions"></ol>
-    </section>
-
-    <section id="proof" class="reel" hidden>
-      <h2>Final</h2>
-      <div class="pair">
-        <figure>
-          <div class="well"><img id="proof-before" alt=""></div>
-          <figcaption id="before-label">Source</figcaption>
-        </figure>
-        <figure>
-          <div class="well"><img id="proof-after" alt=""></div>
-          <figcaption>Result</figcaption>
-        </figure>
-      </div>
-    </section>
-
-  </section>
-
-  <!-- Right: chat, brief, check, exports -->
-  <aside class="rail rail-right">
-    <section class="panel talk" id="chatblock">
-      <h2>Tell it what you want</h2>
-      <div class="chat" id="chat">
-        <div class="starters">
-          <p>Describe a product and it gets made from nothing:</p>
-          <button class="starter" data-say="a matte charcoal linen cushion cover, 45cm square, hidden zip">a matte charcoal linen cushion cover, 45cm square</button>
-          <button class="starter" data-say="a stonewashed sand-coloured cotton duvet set on a made bed">a stonewashed sand cotton duvet set</button>
-          <p>Or, once a run is going:</p>
-          <button class="starter" data-say="put it on a marble counter with morning window light">put it on a marble counter with morning light</button>
-          <button class="starter" data-say="go with the second one but shorten the shadow">go with the second one, shorten the shadow</button>
-        </div>
-      </div>
-      <div class="composer">
-        <textarea id="chatbox" rows="2" placeholder="Describe a product, or direct a run in progress"></textarea>
-        <button class="act" id="send">Send</button>
-      </div>
-    </section>
-
-    <section class="panel" id="briefblock" hidden>
-      <h2>Brief</h2>
-      <div id="brief"></div>
-    </section>
-
-    <section class="panel" id="qablock" hidden>
-      <h2>Check</h2>
-      <div id="qa"></div>
-    </section>
-
-    <section class="panel">
-      <h2>Export</h2>
-      <ul class="presets" id="presets"></ul>
-      <button class="act" id="doexport" disabled>Export selected</button>
-      <div id="exports"></div>
-    </section>
-  </aside>
-
+  <div class="composer-wrap">
+    <div class="composer">
+      <input type="file" id="files" multiple hidden
+             accept=".stl,.obj,.ply,.glb,.gltf,.off,.3mf,.step,.stp,.iges,.igs,.png,.jpg,.jpeg,.webp,.tif,.tiff">
+      <button class="icon attach" id="attach" title="Attach a photo or CAD file">+</button>
+      <textarea id="box" rows="1" placeholder="Describe a product, or say what to change"></textarea>
+      <button class="send" id="send" aria-label="Send">↑</button>
+    </div>
+    <p class="pending" id="attached" hidden></p>
+    <p class="fineprint">Images cost money to make. Check colours against the real product before listing.</p>
+  </div>
 </main>
+
+<div class="lightbox" id="lightbox" hidden>
+  <button class="icon lb-close" id="lbclose" aria-label="Close">✕</button>
+  <img id="lbimg" alt="">
+</div>
 
 <script src="/app.js"></script>
 </body>

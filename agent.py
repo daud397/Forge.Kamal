@@ -472,7 +472,6 @@ ORDINALS = {"first": 0, "second": 1, "third": 2, "fourth": 3,
 
 def _offline_turn(job_id, message, state, pool):
     text = message.lower().strip()
-    actions = []
 
     # Export?
     named = [k for k in PRESETS if k.replace("_", " ") in text or k in text]

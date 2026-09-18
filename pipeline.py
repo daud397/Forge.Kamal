@@ -5,7 +5,6 @@ browser can poll and the tab can be closed without losing the run.
 """
 from __future__ import annotations
 
-import io
 import time
 import traceback
 import zipfile
@@ -342,7 +341,7 @@ def finalise(job_id: str, draft_index: int, extra_instruction: str = "",
         for issue in review["issues"]:
             store.log(job_id, f"Review: {issue}", "warn")
 
-    return store.update(
+    updated = store.update(
         job_id,
         stage="finalised",
         chosen_draft=draft_index,
@@ -351,7 +350,7 @@ def finalise(job_id: str, draft_index: int, extra_instruction: str = "",
             "notes": notes, "review": review},
     )
     _thumb(job_id)
-    return store.get(job_id)
+    return updated
 
 
 # --- Working on an image directly -------------------------------------------
@@ -486,7 +485,8 @@ def rerun(job_id: str, new_job_id: str) -> dict:
     if not old:
         raise ValueError("No such run to repeat.")
 
-    src_dir, dest_dir = job_dir(job_id), job_dir(new_job_id)
+    src_dir = job_dir(job_id)
+    job_dir(new_job_id)                       # create the destination up front
     uploads = []
     for path in sorted(src_dir.glob("src_*")):
         uploads.append((path.name.replace("src_", "", 1), path.read_bytes()))

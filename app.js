@@ -1,15 +1,11 @@
 const $ = (id) => document.getElementById(id);
 
-const STAGES = ["ingesting", "ingested", "briefing", "analysing", "briefed",
-                "drafting", "drafted", "finalising", "finalised",
-                "exporting", "exported"];
-
-let jobId = null;
-let picked = null;
-let poll = null;
 let config = null;
-let pending = [];
-let sending = false;
+let jobId = null;
+let poll = null;
+let attached = [];
+let busy = false;
+let lastRender = "";      // so polling doesn't rebuild an identical thread
 
 init();
 
@@ -17,129 +13,194 @@ async function init() {
   config = await (await fetch("/api/status")).json();
 
   const mode = $("mode");
-  mode.textContent = config.mode === "live"
-    ? `live, ${config.draft_model}`
-    : "mock mode, no API calls";
+  mode.textContent = config.mode === "live" ? "live" : "mock mode";
   mode.className = "meter " + config.mode;
-  mode.title = "Build " + (config.build || "unknown");
+  mode.title = "Build " + (config.build || "unknown") +
+               " · " + config.draft_model;
 
   if (config.auth) $("logoutform").hidden = false;
   drawSpend(config.spend);
   setInterval(refreshSpend, 30000);
 
-  renderPresets();
+  wire();
   loadJobs();
-  wireIntake();
-  wirePaint();
-  wireChat();
+}
 
-  $("makefinal").onclick = makeFinal;
-  $("doexport").onclick = runExport;
-  $("jumptochat").onclick = () => $("chatbox").focus();
-  $("doedit").onclick = () => applyWork("edit");
-  $("doupscale").onclick = () => applyWork("upscale");
-  $("dorerun").onclick = repeatRun;
-  $("workbox").addEventListener("keydown", ev => {
-    if (ev.key === "Enter") { ev.preventDefault(); applyWork("edit"); }
+function wire() {
+  $("send").onclick = submit;
+  $("attach").onclick = () => $("files").click();
+  $("files").onchange = showAttached;
+  $("newrun").onclick = startFresh;
+  $("toggleside").onclick = () => $("sidebar").classList.toggle("hidden");
+  $("lbclose").onclick = () => { $("lightbox").hidden = true; };
+  $("lightbox").onclick = (ev) => {
+    if (ev.target.id !== "lbimg") $("lightbox").hidden = true;
+  };
+
+  const box = $("box");
+  box.addEventListener("keydown", ev => {
+    if (ev.key === "Enter" && !ev.shiftKey) { ev.preventDefault(); submit(); }
+  });
+  box.addEventListener("input", () => {
+    box.style.height = "auto";
+    box.style.height = Math.min(box.scrollHeight, 190) + "px";
+  });
+
+  document.querySelectorAll(".chip").forEach(c => {
+    c.onclick = () => { $("box").value = c.dataset.say; submit(); };
   });
 }
 
-// ---------------------------------------------------------------- intake
-
-function wireIntake() {
-  const drop = $("drop"), input = $("files");
-
-  ["dragenter", "dragover"].forEach(e =>
-    drop.addEventListener(e, ev => { ev.preventDefault(); drop.classList.add("hot"); }));
-  ["dragleave", "drop"].forEach(e =>
-    drop.addEventListener(e, ev => { ev.preventDefault(); drop.classList.remove("hot"); }));
-
-  drop.addEventListener("drop", ev => { input.files = ev.dataTransfer.files; showFiles(); });
-  input.addEventListener("change", showFiles);
-  $("start").onclick = startRun;
+function startFresh() {
+  jobId = null;
+  attached = [];
+  clearInterval(poll);
+  lastRender = "";
+  $("files").value = "";
+  $("attached").hidden = true;
+  $("threadtitle").textContent = "Listing Forge";
+  $("thread").innerHTML = "";
+  $("thread").appendChild(introBlock());
+  loadJobs();
 }
 
-const CAD = ["stl","obj","ply","glb","gltf","off","3mf","step","stp","iges","igs"];
-
-function showFiles() {
-  pending = [...$("files").files];
-  $("filelist").innerHTML = pending.map(f => {
-    const ext = f.name.split(".").pop().toLowerCase();
-    return `<li><span>${esc(f.name)}</span>
-            <span class="kind">${CAD.includes(ext) ? "CAD" : "photo"}</span></li>`;
-  }).join("");
-  $("start").disabled = pending.length === 0;
+function introBlock() {
+  const d = document.createElement("div");
+  d.className = "intro";
+  d.innerHTML = `
+    <h1>What are we photographing?</h1>
+    <p>Describe a product and it gets made from nothing, or attach a photo or
+       CAD file to work from the real thing.</p>
+    <div class="chips">
+      <button class="chip" data-say="a matte charcoal linen cushion cover, 45cm square, hidden zip">A charcoal linen cushion cover</button>
+      <button class="chip" data-say="a stonewashed sand cotton duvet set on a made bed, UK bedroom">A sand cotton duvet set</button>
+      <button class="chip" data-say="a grey cheetah print duvet set on a made bed in a modern UK bedroom">A grey cheetah print duvet set</button>
+    </div>`;
+  setTimeout(() => d.querySelectorAll(".chip").forEach(c => {
+    c.onclick = () => { $("box").value = c.dataset.say; submit(); };
+  }), 0);
+  return d;
 }
 
-async function startRun() {
-  const body = new FormData();
-  pending.forEach(f => body.append("files", f));
-  body.append("note", $("note").value);
+// ---------------------------------------------------------------- sending
 
-  $("start").disabled = true;
-  $("start").textContent = "Starting";
+function showAttached() {
+  attached = [...$("files").files];
+  const note = $("attached");
+  if (!attached.length) { note.hidden = true; return; }
+  note.hidden = false;
+  note.textContent = attached.map(f => f.name).join(", ") +
+    " — add a note if useful, then send.";
+}
 
-  const res = await fetch("/api/jobs", { method: "POST", body });
-  $("start").textContent = "Start run";
+async function submit() {
+  if (busy) return;
+  const box = $("box");
+  const text = box.value.trim();
 
-  if (!res.ok) {
-    $("start").disabled = false;
-    return alert("Upload failed: " + await res.text());
+  if (!text && !attached.length) return;
+
+  busy = true;
+  $("send").disabled = true;
+  box.value = "";
+  box.style.height = "auto";
+
+  const intro = document.querySelector(".intro");
+  if (intro) intro.remove();
+
+  if (text) say("user", text);
+
+  try {
+    if (attached.length) {
+      await startFromFiles(text);
+    } else if (!jobId) {
+      await startFromDescription(text);
+    } else {
+      await sendToChat(text);
+    }
+  } catch (err) {
+    say("bot", "That didn't go through: " + err.message);
   }
 
-  beginWatching((await res.json()).job_id);
+  busy = false;
+  $("send").disabled = false;
+  box.focus();
 }
 
-function beginWatching(id) {
-  jobId = id;
-  picked = null;
+async function startFromFiles(note) {
+  const body = new FormData();
+  attached.forEach(f => body.append("files", f));
+  body.append("note", note);
 
-  // Clear the previous run's panels. Without this, opening an older job leaves
-  // the last run's drafts and verdict on screen next to the new one's, which
-  // reads as the portal showing you the wrong images.
-  ["renders", "paint", "sheet", "proof", "work", "briefblock", "qablock"]
-    .forEach(p => { $(p).hidden = true; });
-  $("exports").innerHTML = "";
-  $("doexport").disabled = true;
-  $("makefinal").disabled = true;
+  const pend = say("bot", "Reading the file…", true);
+  const res = await fetch("/api/jobs", { method: "POST", body });
+  if (!res.ok) throw new Error(await res.text());
 
-  $("logblock").hidden = false;
-  $("placeholder").hidden = true;
-  enableChatHistory();
-  loadJobs();
+  attached = [];
+  $("files").value = "";
+  $("attached").hidden = true;
+  pend.remove();
+
+  jobId = (await res.json()).job_id;
+  lastRender = "";
   watch();
 }
 
-function enableChatHistory() {
-  const starters = $("chat").querySelector(".starters");
-  if (starters) starters.remove();
+async function startFromDescription(text) {
+  const body = new FormData();
+  body.append("description", text);
+
+  const pend = say("bot", "Writing the brief…", true);
+  const res = await fetch("/api/jobs/describe", { method: "POST", body });
+  if (!res.ok) throw new Error(await res.text());
+
+  pend.remove();
+  jobId = (await res.json()).job_id;
+  lastRender = "";
+  watch();
+}
+
+async function sendToChat(text) {
+  const body = new FormData();
+  body.append("message", text);
+
+  const pend = say("bot", "Working…", true);
+  const res = await fetch(`/api/jobs/${jobId}/chat`, { method: "POST", body });
+  const data = await res.json();
+
+  pend.remove();
+  say("bot", data.reply);
+  lastRender = "";
+  watch();
+}
+
+function say(who, text, thinking) {
+  const t = document.createElement("div");
+  t.className = "turn " + (who === "user" ? "user" : "bot");
+  const b = document.createElement("div");
+  b.className = "bubble" + (thinking ? " thinking" : "");
+  b.textContent = text;
+  t.appendChild(b);
+
+  const thread = $("thread");
+  thread.appendChild(t);
+  thread.scrollTop = thread.scrollHeight;
+  return t;
 }
 
 // ---------------------------------------------------------------- polling
 
 function watch() {
   clearInterval(poll);
-  poll = setInterval(refresh, 1200);
+  poll = setInterval(refresh, 1300);
   refresh();
 }
 
 async function refresh() {
   if (!jobId) return;
   const state = await (await fetch(`/api/jobs/${jobId}`)).json();
-  const scratch = state.mode === "scratch";
 
-  drawStages(state.stage, scratch);
-  drawLog(state.log || []);
-
-  if (state.renders && Object.keys(state.renders).length) drawRenders(state);
-  if (state.mask_source === "needs_paint" && state.base_image) setupPaint(state);
-  if (state.brief) drawBrief(state.brief);
-  if (state.drafts) drawDrafts(state, scratch);
-  if (state.qa) drawQA(state, scratch);
-  if (state.final_file) drawProof(state, scratch);
-  if (state.drafts || state.final_file) drawWork(state);
-  if (state.exports) drawExports(state);
-  if (state.chat && !sending) drawChat(state.chat);
+  render(state);
 
   if (["drafted", "finalised", "exported", "failed"].includes(state.stage)) {
     clearInterval(poll);
@@ -147,298 +208,253 @@ async function refresh() {
   }
 }
 
-function drawStages(current, scratch) {
-  const steps = scratch
-    ? [["brief", 2, 4], ["generate", 5, 6], ["refine", 7, 8], ["export", 9, 10]]
-    : [["ingest", 0, 1], ["brief", 2, 4], ["draft", 5, 6], ["final", 7, 8], ["export", 9, 10]];
+/* The thread is rebuilt from job state rather than appended to, so reopening an
+   old run shows exactly what that run produced. The fingerprint stops the
+   1.3s poll from redrawing an unchanged thread and stealing the scroll. */
+function render(state) {
+  const stamp = JSON.stringify([
+    state.stage, state.chosen_draft, state.final_file,
+    (state.drafts || []).length, (state.versions || []).length,
+    (state.exports || []).length, (state.chat || []).length,
+    (state.log || []).length,
+  ]);
+  if (stamp === lastRender) return;
+  lastRender = stamp;
 
-  const idx = STAGES.indexOf(current);
-  $("stages").innerHTML = steps.map(([name, from, to]) => {
-    let cls = "";
-    if (current !== "failed") {
-      if (idx > to) cls = "done";
-      else if (idx >= from) cls = "active";
-    } else if (idx >= from) cls = "";
-    else cls = "done";
-    return `<span class="${cls}">${name}</span>`;
-  }).join("") + (current === "failed" ? `<span class="failed">failed</span>` : "");
+  const brief = state.brief || {};
+  $("threadtitle").textContent = brief.product_name || state.note || "New run";
+
+  const thread = $("thread");
+  thread.innerHTML = "";
+
+  if (state.note) say("user", state.note);
+
+  (state.chat || []).forEach(m => say(m.role === "user" ? "user" : "bot", m.content));
+
+  if (state.stage === "failed") {
+    status(friendlyError(state.error), true);
+    return;
+  }
+
+  if (!state.drafts && !state.final_file) {
+    status(working(state.stage));
+  }
+
+  if (state.renders && Object.keys(state.renders).length) {
+    imageCard("Rendered from your file", Object.entries(state.renders)
+      .map(([name, file]) => ({ file, label: name })), state, "three");
+  }
+
+  if (state.drafts && !state.final_file) {
+    imageCard(state.mode === "scratch" ? "Pick one" : "Pick a scene",
+      state.drafts, state, state.drafts.length > 2 ? "three" : "two", true);
+  }
+
+  if (state.final_file) finalCard(state);
+
+  thread.scrollTop = thread.scrollHeight;
 }
 
-function drawLog(entries) {
-  const log = $("log");
-  log.innerHTML = entries.map(e => `<li class="${e.level}">${esc(e.message)}</li>`).join("");
-  log.scrollTop = log.scrollHeight;
+function working(stage) {
+  return {
+    ingesting: "Reading your file…",
+    ingested: "Read it.",
+    briefing: "Writing the brief…",
+    analysing: "Looking at the product…",
+    briefed: "Brief written.",
+    drafting: "Generating options…",
+    finalising: "Making the final image…",
+    exporting: "Exporting…",
+  }[stage] || "Working…";
 }
 
-// ---------------------------------------------------------------- panels
-
-function drawRenders(state) {
-  $("renders").hidden = false;
-  $("render-row").innerHTML = Object.entries(state.renders).map(([name, file]) =>
-    `<div class="well"><img src="/api/jobs/${jobId}/file/${file}"
-       alt="${esc(name)} render" title="${esc(name)}"></div>`).join("");
+function friendlyError(raw) {
+  const t = (raw || "").toLowerCase();
+  if (t.includes("patches") || t.includes("resize the image"))
+    return "That image was too large to read. Try one under about 3000px.";
+  if (t.includes("cap"))
+    return "The daily spend cap stopped this run. It resets at midnight UTC.";
+  if (t.includes("verif"))
+    return "OpenAI hasn't verified this organisation yet, so images can't be generated.";
+  if (t.includes("api key") || t.includes("authentication"))
+    return "The API key was rejected.";
+  return "That run failed: " + (raw || "no reason given");
 }
 
-function drawBrief(brief) {
-  $("briefblock").hidden = false;
-  $("brief").innerHTML = `
-    <dl>
-      <dt>Product</dt><dd>${esc(brief.product_name || "—")}</dd>
-      <dt>Category</dt><dd>${esc(brief.category || "—")}</dd>
-      <dt>Colours</dt>
-      <dd><div class="swatches">${(brief.dominant_colours || []).map(c =>
-        `<span class="swatch" style="background:${esc(c.hex)}"
-           title="${esc(c.name)} ${esc(c.hex)}"></span>`).join("")}</div></dd>
-      <dt>Surface</dt><dd>${esc(brief.surface_pattern || "—")}</dd>
-      <dt>Must survive editing</dt>
-      <dd><div class="tags">${(brief.must_preserve || []).map(m =>
-        `<span>${esc(m)}</span>`).join("")}</div></dd>
-      ${(brief.risks || []).length
-        ? `<dt>Known risks</dt><dd>${brief.risks.map(esc).join("<br>")}</dd>` : ""}
-    </dl>`;
+function status(text, bad) {
+  const d = document.createElement("div");
+  d.className = "status" + (bad ? " bad" : "");
+  d.innerHTML = `<span class="dot"></span><span></span>`;
+  d.lastChild.textContent = text;
+  $("thread").appendChild(d);
 }
 
-function drawDrafts(state, scratch) {
-  $("sheet").hidden = false;
-  $("sheet-title").textContent = scratch ? "Generated options" : "Drafts";
+// ---------------------------------------------------------------- cards
 
-  $("sheet-row").innerHTML = state.drafts.map(d => `
-    <button class="card ${picked === d.index ? "selected" : ""}" data-i="${d.index}">
-      <span class="well"><img src="/api/jobs/${jobId}/file/${d.file}" alt="${esc(d.label)}"></span>
-      <figcaption>${esc(d.label)}</figcaption>
-    </button>`).join("");
+function imageCard(heading, items, state, cols, pickable) {
+  const card = document.createElement("div");
+  card.className = "card";
+  card.innerHTML = `<h3>${esc(heading)}</h3>
+    <div class="grid ${cols}"></div>`;
+  const grid = card.querySelector(".grid");
 
-  document.querySelectorAll(".card").forEach(card => {
-    card.onclick = () => {
-      picked = Number(card.dataset.i);
-      document.querySelectorAll(".card").forEach(c => c.classList.remove("selected"));
-      card.classList.add("selected");
-      $("makefinal").disabled = false;
-    };
+  items.forEach(it => {
+    const b = document.createElement("button");
+    b.className = "shot" + (pickable ? " pick" : "") +
+      (state.chosen_draft === it.index ? " chosen" : "");
+    b.innerHTML = `<span class="frame">
+        <img src="/api/jobs/${jobId}/file/${it.file}" alt="${esc(it.label)}">
+      </span><span class="cap">${esc(it.label)}</span>`;
+
+    b.onclick = pickable
+      ? () => choose(it.index, it.label)
+      : () => zoom(`/api/jobs/${jobId}/file/${it.file}`);
+    grid.appendChild(b);
   });
+
+  $("thread").appendChild(card);
 }
 
-function drawQA(state, scratch) {
-  const { stats, level, notes, review } = state.qa;
-  $("qablock").hidden = false;
+function finalCard(state) {
+  const card = document.createElement("div");
+  card.className = "card single";
+  card.innerHTML = `
+    <h3>Final image</h3>
+    <div class="frame">
+      <img id="finalimg" src="/api/jobs/${jobId}/file/${state.final_file}?v=${(state.versions || []).length}" alt="Final image">
+    </div>`;
 
-  const label = {
-    pass: "within tolerance", warn: "worth a look",
-    fail: "out of tolerance", info: "no source to compare",
-  }[level] || level;
+  const qa = state.qa;
+  if (qa) {
+    const words = { pass: "Colour and shape held", warn: "Worth a look",
+                    fail: "The model drifted", info: "Judge this by eye" };
+    const v = document.createElement("p");
+    v.className = "verdict";
+    v.innerHTML = `<span class="tag ${qa.level}">${words[qa.level] || qa.level}</span>`;
+    if (qa.notes && qa.notes[0]) {
+      v.appendChild(document.createTextNode(" — " + qa.notes[0]));
+    }
+    card.appendChild(v);
+  }
 
-  const t = config.tolerances;
-  $("qa").innerHTML = `
-    <span class="verdict ${level}">${label}</span>
-    <table class="metrics">
-      <tr><td>Colour shift, mean</td><td>${stats.delta_e_mean} dE</td></tr>
-      <tr><td>Colour shift, 95th</td><td>${stats.delta_e_p95} dE</td></tr>
-      <tr><td>Structure kept</td><td>${stats.ssim_product}</td></tr>
-      <tr><td>Product area</td><td>${(stats.product_coverage * 100).toFixed(1)}%</td></tr>
-    </table>
-    <ul class="notes">
-      ${notes.map(n => `<li>${esc(n)}</li>`).join("")}
-      ${(review?.issues || []).map(i => `<li>${esc(i)}</li>`).join("")}
-    </ul>
-    ${scratch ? "" : `<p class="threshold">Passes under ${t.delta_e_pass} dE,
-      fails over ${t.delta_e_warn} dE, structure floor ${t.ssim_pass}.</p>`}`;
+  const acts = document.createElement("div");
+  acts.className = "actions";
+
+  add(acts, "Enlarge 2×", () => enhance("upscale"));
+  add(acts, "Run again", repeat);
+
+  (state.exports || []).forEach(e => {
+    const a = document.createElement("a");
+    a.href = `/api/jobs/${jobId}/file/${e.file}`;
+    a.download = "";
+    a.textContent = "↓ " + e.label;
+    if (!e.generative_allowed) {
+      a.className = "warnlink";
+      a.title = "This slot expects a real photograph.";
+    }
+    acts.appendChild(a);
+  });
+
+  if (!(state.exports || []).length) {
+    add(acts, "Export all sizes", exportAll);
+  }
+
+  card.appendChild(acts);
+  $("thread").appendChild(card);
+
+  card.querySelector("#finalimg").onclick = () =>
+    zoom(`/api/jobs/${jobId}/file/${state.final_file}`);
 }
 
-function drawProof(state, scratch) {
-  $("proof").hidden = false;
-  $("before-label").textContent = scratch ? "Option you chose" : "Source";
-  const before = scratch
-    ? (state.drafts.find(d => d.index === state.chosen_draft) || {}).file
-    : state.base_image;
-  if (before) $("proof-before").src = `/api/jobs/${jobId}/file/${before}`;
-  $("proof-after").src = `/api/jobs/${jobId}/file/${state.final_file}?t=${Date.now()}`;
-  $("doexport").disabled = false;
-}
-
-function renderPresets() {
-  $("presets").innerHTML = Object.entries(config.presets).map(([key, p]) => `
-    <li><label>
-      <input type="checkbox" value="${key}" ${p.generative ? "checked" : ""}>
-      <span>${esc(p.label)}
-        <span class="dims">${p.size} ${p.format}</span>
-        ${p.generative ? "" :
-          `<span class="flag">Needs a real photograph. Generated imagery risks rejection here.</span>`}
-      </span>
-    </label></li>`).join("");
-}
-
-function drawExports(state) {
-  $("exports").innerHTML = state.exports.map(e => `
-    <div class="row">
-      <a href="/api/jobs/${jobId}/file/${e.file}" download>${esc(e.label)}</a>
-      <span class="meta">${e.size}, ${e.scale}</span>
-    </div>`).join("") + (state.zip_file
-      ? `<div class="row"><a href="/api/jobs/${jobId}/file/${state.zip_file}" download>Everything as a zip</a></div>`
-      : "");
+function add(parent, label, fn) {
+  const b = document.createElement("button");
+  b.textContent = label;
+  b.onclick = fn;
+  parent.appendChild(b);
 }
 
 // ---------------------------------------------------------------- actions
 
-async function makeFinal() {
-  if (picked === null) return;
-
+async function choose(index, label) {
+  say("user", `Use ${label}`);
   const body = new FormData();
-  body.append("draft_index", picked);
-  body.append("instruction", $("instruction").value);
-  body.append("presets", selectedPresets().join(","));
-
-  const mask = await paintedMask();
-  if (mask) body.append("mask", mask, "mask.png");
-
-  $("makefinal").disabled = true;
+  body.append("draft_index", index);
+  body.append("instruction", "");
+  body.append("presets", "");
   await fetch(`/api/jobs/${jobId}/finalise`, { method: "POST", body });
+  lastRender = "";
   watch();
 }
 
-async function runExport() {
+async function enhance(action) {
   const body = new FormData();
-  body.append("presets", selectedPresets().join(","));
-  $("doexport").disabled = true;
-  await fetch(`/api/jobs/${jobId}/export`, { method: "POST", body });
+  body.append("instruction", "");
+  body.append("action", action);
+  body.append("scale", "2");
+  await fetch(`/api/jobs/${jobId}/enhance`, { method: "POST", body });
+  lastRender = "";
   watch();
 }
 
-function selectedPresets() {
-  return [...document.querySelectorAll("#presets input:checked")].map(i => i.value);
+async function exportAll() {
+  const wanted = Object.entries(config.presets)
+    .filter(([, p]) => p.generative).map(([k]) => k);
+  const body = new FormData();
+  body.append("presets", wanted.join(","));
+  await fetch(`/api/jobs/${jobId}/export`, { method: "POST", body });
+  lastRender = "";
+  watch();
 }
 
-// ---------------------------------------------------------------- mask painting
-
-let painting = false, ctx = null;
-
-function wirePaint() {
-  const canvas = $("paint-canvas");
-  ctx = canvas.getContext("2d");
-
-  const pos = ev => {
-    const r = canvas.getBoundingClientRect();
-    return [(ev.clientX - r.left) * canvas.width / r.width,
-            (ev.clientY - r.top) * canvas.height / r.height];
-  };
-
-  const stroke = ev => {
-    if (!painting) return;
-    const [x, y] = pos(ev);
-    const size = Number($("brush").value) * canvas.width / canvas.getBoundingClientRect().width;
-    ctx.fillStyle = "rgba(91,127,185,0.55)";
-    ctx.beginPath();
-    ctx.arc(x, y, size / 2, 0, Math.PI * 2);
-    ctx.fill();
-  };
-
-  canvas.addEventListener("pointerdown", ev => {
-    painting = true; canvas.setPointerCapture(ev.pointerId); stroke(ev);
-  });
-  canvas.addEventListener("pointermove", stroke);
-  canvas.addEventListener("pointerup", () => { painting = false; });
-  canvas.addEventListener("pointercancel", () => { painting = false; });
-
-  $("clearpaint").onclick = () => ctx.clearRect(0, 0, canvas.width, canvas.height);
+async function repeat() {
+  const res = await fetch(`/api/jobs/${jobId}/rerun`, { method: "POST" });
+  if (!res.ok) return;
+  jobId = (await res.json()).job_id;
+  lastRender = "";
+  $("thread").innerHTML = "";
+  watch();
 }
 
-function setupPaint(state) {
-  if (!$("paint").hidden) return;
-  $("paint").hidden = false;
-
-  const img = $("paint-base");
-  img.onload = () => {
-    const canvas = $("paint-canvas");
-    canvas.width = img.naturalWidth;
-    canvas.height = img.naturalHeight;
-    canvas.style.width = img.clientWidth + "px";
-    canvas.style.height = img.clientHeight + "px";
-  };
-  img.src = `/api/jobs/${jobId}/file/${state.base_image}`;
+function zoom(src) {
+  $("lbimg").src = src;
+  $("lightbox").hidden = false;
 }
 
-function paintedMask() {
-  const canvas = $("paint-canvas");
-  if ($("paint").hidden) return Promise.resolve(null);
+// ---------------------------------------------------------------- sidebar
 
-  const data = ctx.getImageData(0, 0, canvas.width, canvas.height).data;
-  for (let i = 3; i < data.length; i += 4) {
-    if (data[i] > 0) return new Promise(r => canvas.toBlob(r, "image/png"));
+async function loadJobs() {
+  const { jobs } = await (await fetch("/api/jobs")).json();
+  const box = $("jobs");
+
+  if (!jobs.length) {
+    box.innerHTML = `<p class="empty">No runs yet</p>`;
+    return;
   }
-  return Promise.resolve(null);
-}
 
-// ---------------------------------------------------------------- chat
+  box.innerHTML = jobs.map(j => {
+    const thumb = j.thumb
+      ? `<img class="run-thumb" src="/api/jobs/${j.id}/file/${j.thumb}" alt="">`
+      : `<span class="run-thumb blank">${j.stage === "failed" ? "—" : "…"}</span>`;
+    const meta = j.stage === "failed"
+      ? `<span class="bad">failed</span>`
+      : (j.exported ? `${j.exported} exported` : esc(j.stage));
+    return `<button class="run ${j.id === jobId ? "current" : ""}" data-id="${j.id}">
+      ${thumb}
+      <span class="run-text">
+        <span class="run-name">${esc(j.product || "Untitled run")}</span>
+        <span class="run-meta">${meta}</span>
+      </span></button>`;
+  }).join("");
 
-function wireChat() {
-  $("send").onclick = sendMessage;
-  $("chatbox").addEventListener("keydown", ev => {
-    if (ev.key === "Enter" && !ev.shiftKey) { ev.preventDefault(); sendMessage(); }
-  });
-  document.querySelectorAll(".starter").forEach(b => {
-    b.onclick = () => { $("chatbox").value = b.dataset.say; sendMessage(); };
-  });
-}
-
-function drawChat(history) {
-  const chat = $("chat");
-  chat.innerHTML = history.map(m =>
-    `<div class="msg ${m.role === "user" ? "you" : "forge"}">${esc(m.content)}</div>`).join("");
-  chat.scrollTop = chat.scrollHeight;
-}
-
-async function sendMessage() {
-  const box = $("chatbox");
-  const text = box.value.trim();
-  if (!text || sending) return;
-
-  sending = true;
-  box.value = "";
-  $("send").disabled = true;
-
-  const chat = $("chat");
-  const starters = chat.querySelector(".starters");
-  if (starters) starters.remove();
-
-  chat.insertAdjacentHTML("beforeend", `<div class="msg you">${esc(text)}</div>`);
-  chat.insertAdjacentHTML("beforeend",
-    `<div class="msg forge thinking" id="pending">working</div>`);
-  chat.scrollTop = chat.scrollHeight;
-
-  try {
-    // With no run open, the first message describes a product to create.
-    if (!jobId) {
-      const body = new FormData();
-      body.append("description", text);
-      const res = await fetch("/api/jobs/describe", { method: "POST", body });
-      if (!res.ok) throw new Error(await res.text());
-
-      settle("Writing the brief, then generating three treatments. They'll appear "
-             + "in the middle as they finish.", true);
-      beginWatching((await res.json()).job_id);
-    } else {
-      const body = new FormData();
-      body.append("message", text);
-      const res = await fetch(`/api/jobs/${jobId}/chat`, { method: "POST", body });
-      const data = await res.json();
-      settle(data.reply, data.actions?.length > 0);
+  box.querySelectorAll(".run").forEach(b => {
+    b.onclick = () => {
+      jobId = b.dataset.id;
+      lastRender = "";
+      $("thread").innerHTML = "";
       watch();
-    }
-  } catch (err) {
-    settle("That didn't go through: " + err.message, false);
-  }
-
-  chat.scrollTop = chat.scrollHeight;
-  sending = false;
-  $("send").disabled = false;
-  box.focus();
-}
-
-function settle(text, acted) {
-  const el = $("pending");
-  if (!el) return;
-  el.className = "msg forge" + (acted ? " acted" : "");
-  el.id = "";
-  el.textContent = text;
+      if (window.innerWidth < 860) $("sidebar").classList.add("hidden");
+    };
+  });
 }
 
 // ---------------------------------------------------------------- spend
@@ -447,117 +463,17 @@ function drawSpend(spend) {
   if (!spend || !spend.enforced) return;
   const chip = $("spend");
   chip.hidden = false;
-
   const ratio = spend.cap > 0 ? spend.today / spend.cap : 0;
-  chip.textContent = `$${spend.today.toFixed(2)} of $${spend.cap.toFixed(2)} today`;
+  chip.textContent = `$${spend.today.toFixed(2)} / $${spend.cap.toFixed(2)}`;
   chip.className = "meter" + (ratio >= 1 ? " over" : ratio >= 0.8 ? " near" : "");
   chip.title = spend.note + " Resets at midnight UTC.";
 }
 
 async function refreshSpend() {
-  try { drawSpend(await (await fetch("/api/spend")).json()); } catch { /* non-critical */ }
-}
-
-// ---------------------------------------------------------------- misc
-
-const VERDICT_WORD = {
-  pass: ["checked", "ok"], warn: ["worth a look", "mid"],
-  fail: ["drifted", "bad"], info: ["made up", ""],
-};
-
-async function loadJobs() {
-  const { jobs } = await (await fetch("/api/jobs")).json();
-  const box = $("jobs");
-
-  if (!jobs.length) {
-    box.innerHTML = `<p class="nothing">Nothing yet</p>`;
-    return;
-  }
-
-  box.innerHTML = jobs.map(j => {
-    const thumb = j.thumb
-      ? `<img class="run-thumb" src="/api/jobs/${j.id}/file/${j.thumb}" alt="">`
-      : `<span class="run-thumb blank">${j.stage === "failed" ? "—" : "…"}</span>`;
-
-    const bits = [];
-    if (j.created) bits.push(esc(j.created));
-    if (j.stage === "failed") bits.push(`<span class="bad">failed</span>`);
-    else if (j.exported) bits.push(`${j.exported} exported`);
-    else bits.push(esc(j.stage));
-
-    const v = VERDICT_WORD[j.verdict];
-    if (v && j.stage !== "failed") bits.push(`<span class="${v[1]}">${v[0]}</span>`);
-
-    return `<button class="run ${j.id === jobId ? "current" : ""}" data-id="${j.id}">
-      ${thumb}
-      <span class="run-text">
-        <span class="run-name">${esc(j.product || "Untitled run")}</span>
-        <span class="run-meta">${bits.join(" · ")}</span>
-      </span>
-    </button>`;
-  }).join("");
-
-  document.querySelectorAll(".run").forEach(b => {
-    b.onclick = () => beginWatching(b.dataset.id);
-  });
+  try { drawSpend(await (await fetch("/api/spend")).json()); } catch { /* not critical */ }
 }
 
 function esc(s) {
   return String(s ?? "").replace(/[&<>"']/g, c =>
     ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
-}
-
-
-// ---------------------------------------------------------------- working on an image
-
-function drawWork(state) {
-  $("work").hidden = false;
-
-  const versions = state.versions || [];
-  $("versions").innerHTML = versions.map(v => `
-    <li>
-      <span class="step">${v.step}</span>
-      <span class="what">${esc(v.action === "upscale" ? "Enlarged " + v.instruction : v.instruction)}</span>
-      <span class="dim">${esc(v.size)}</span>
-    </li>`).join("");
-
-  const latest = versions[versions.length - 1];
-  $("worksize").textContent = latest
-    ? `Now ${latest.size}`
-    : "Each change stacks on the last";
-}
-
-async function applyWork(action) {
-  if (!jobId) return;
-  const box = $("workbox");
-
-  if (action === "edit" && !box.value.trim()) {
-    box.focus();
-    return;
-  }
-
-  const body = new FormData();
-  body.append("instruction", box.value.trim());
-  body.append("action", action);
-  body.append("scale", "2");
-
-  $("doedit").disabled = true;
-  $("doupscale").disabled = true;
-  await fetch(`/api/jobs/${jobId}/enhance`, { method: "POST", body });
-
-  if (action === "edit") box.value = "";
-  setTimeout(() => {
-    $("doedit").disabled = false;
-    $("doupscale").disabled = false;
-  }, 1500);
-  watch();
-}
-
-async function repeatRun() {
-  if (!jobId) return;
-  $("dorerun").disabled = true;
-  const res = await fetch(`/api/jobs/${jobId}/rerun`, { method: "POST" });
-  $("dorerun").disabled = false;
-  if (!res.ok) return;
-  beginWatching((await res.json()).job_id);
 }

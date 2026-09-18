@@ -33,7 +33,8 @@ def load_mesh(path: Path):
 
     if suffix in (".step", ".stp", ".iges", ".igs"):
         try:
-            import cascadio  # noqa: F401
+            import importlib
+            importlib.import_module("cascadio")
         except ImportError as exc:
             raise CADError(
                 "STEP and IGES need the OpenCascade bridge. Install it with "
