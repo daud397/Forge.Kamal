@@ -86,9 +86,26 @@ async function startRun() {
 function beginWatching(id) {
   jobId = id;
   picked = null;
+
+  // Clear the previous run's panels. Without this, opening an older job leaves
+  // the last run's drafts and verdict on screen next to the new one's, which
+  // reads as the portal showing you the wrong images.
+  ["renders", "paint", "sheet", "proof", "briefblock", "qablock"]
+    .forEach(p => { $(p).hidden = true; });
+  $("exports").innerHTML = "";
+  $("doexport").disabled = true;
+  $("makefinal").disabled = true;
+
   $("logblock").hidden = false;
   $("placeholder").hidden = true;
+  enableChatHistory();
+  loadJobs();
   watch();
+}
+
+function enableChatHistory() {
+  const starters = $("chat").querySelector(".starters");
+  if (starters) starters.remove();
 }
 
 // ---------------------------------------------------------------- polling
@@ -435,15 +452,45 @@ async function refreshSpend() {
 
 // ---------------------------------------------------------------- misc
 
+const VERDICT_WORD = {
+  pass: ["checked", "ok"], warn: ["worth a look", "mid"],
+  fail: ["drifted", "bad"], info: ["made up", ""],
+};
+
 async function loadJobs() {
   const { jobs } = await (await fetch("/api/jobs")).json();
-  $("jobs").innerHTML = jobs.length
-    ? jobs.map(j => `<li><a href="#" data-id="${j.id}">${esc(j.product || j.id)}</a>
-        <span class="stage-tag">${esc(j.stage)}</span></li>`).join("")
-    : `<li class="nothing">Nothing yet</li>`;
+  const box = $("jobs");
 
-  document.querySelectorAll("#jobs a").forEach(a => {
-    a.onclick = ev => { ev.preventDefault(); beginWatching(a.dataset.id); };
+  if (!jobs.length) {
+    box.innerHTML = `<p class="nothing">Nothing yet</p>`;
+    return;
+  }
+
+  box.innerHTML = jobs.map(j => {
+    const thumb = j.thumb
+      ? `<img class="run-thumb" src="/api/jobs/${j.id}/file/${j.thumb}" alt="">`
+      : `<span class="run-thumb blank">${j.stage === "failed" ? "—" : "…"}</span>`;
+
+    const bits = [];
+    if (j.created) bits.push(esc(j.created));
+    if (j.stage === "failed") bits.push(`<span class="bad">failed</span>`);
+    else if (j.exported) bits.push(`${j.exported} exported`);
+    else bits.push(esc(j.stage));
+
+    const v = VERDICT_WORD[j.verdict];
+    if (v && j.stage !== "failed") bits.push(`<span class="${v[1]}">${v[0]}</span>`);
+
+    return `<button class="run ${j.id === jobId ? "current" : ""}" data-id="${j.id}">
+      ${thumb}
+      <span class="run-text">
+        <span class="run-name">${esc(j.product || "Untitled run")}</span>
+        <span class="run-meta">${bits.join(" · ")}</span>
+      </span>
+    </button>`;
+  }).join("");
+
+  document.querySelectorAll(".run").forEach(b => {
+    b.onclick = () => beginWatching(b.dataset.id);
   });
 }
 
