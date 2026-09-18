@@ -74,6 +74,7 @@ def spend():
 @app.get("/api/status")
 def status():
     return {
+        "build": config.BUILD,
         "mode": "live" if models.live() else "mock",
         "reasoning_model": config.REASONING_MODEL,
         "draft_model": config.DRAFT_MODEL,

@@ -84,10 +84,16 @@ def recent(limit: int = 30) -> list[dict]:
     out = []
     for r in rows:
         s = json.loads(r["state"])
+        brief = s.get("brief") or {}
+        qa = s.get("qa") or {}
         out.append({
             "id": s["id"],
             "stage": s.get("stage"),
-            "product": (s.get("brief") or {}).get("product_name"),
+            "mode": s.get("mode", "edit"),
+            "product": brief.get("product_name") or s.get("note") or None,
             "created": s.get("created_at"),
+            "thumb": s.get("thumb"),
+            "verdict": qa.get("level"),
+            "exported": len(s.get("exports") or []),
         })
     return out

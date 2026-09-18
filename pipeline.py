@@ -17,6 +17,10 @@ import cad, config, imaging, models, store
 from presets import preset
 
 
+# Long edge cap for uploaded photographs.
+PHOTO_MAX_EDGE = 2048
+
+
 def job_dir(job_id: str) -> Path:
     d = config.DATA / "jobs" / job_id
     d.mkdir(parents=True, exist_ok=True)
@@ -31,6 +35,29 @@ def _save(job_id: str, img: Image.Image, name: str) -> str:
 
 def _load(job_id: str, name: str) -> Image.Image:
     return Image.open(job_dir(job_id) / name).convert("RGBA")
+
+
+def _thumb(job_id: str):
+    """Small still for the run history.
+
+    Picks the most finished thing the run has produced, so a history entry
+    shows the delivered image where there is one and the starting point where
+    there isn't - rather than a row of identical placeholder icons.
+    """
+    state = store.get(job_id) or {}
+    drafts = state.get("drafts") or []
+    source = (state.get("final_file")
+              or (drafts[0]["file"] if drafts else None)
+              or state.get("base_image"))
+    if not source:
+        return
+    try:
+        img = imaging.flatten(_load(job_id, source), (126, 126, 126))
+        img.thumbnail((320, 320), Image.LANCZOS)
+        img.save(job_dir(job_id) / "thumb.jpg", "JPEG", quality=82)
+        store.update(job_id, thumb="thumb.jpg")
+    except Exception:
+        pass            # a missing thumbnail is never worth failing a run over
 
 
 # --- Stage 1: ingest ---------------------------------------------------------
@@ -66,6 +93,18 @@ def ingest(job_id: str, uploads: list[tuple[str, bytes]], note: str = "") -> dic
     photo_names = []
     for path in photos:
         img = Image.open(path).convert("RGBA")
+
+        # A phone photo can be 4000px on the long edge. The final pass renders
+        # at 1536 and the composite happens there, so anything beyond about
+        # 2048 is weight we pay to upload and store for no gain in the output.
+        if max(img.size) > PHOTO_MAX_EDGE:
+            k = PHOTO_MAX_EDGE / max(img.size)
+            before = img.size
+            img = imaging.resize_rgba(
+                img, (round(img.width * k), round(img.height * k)))
+            store.log(job_id, f"{path.name} resized from {before[0]}x{before[1]} "
+                              f"to {img.width}x{img.height}.")
+
         name = f"photo_{path.stem}.png"
         img.save(d / name)
         photo_names.append(name)
@@ -142,7 +181,9 @@ def drafts_scratch(job_id: str) -> dict:
                     "prompt": prompt, "file": name})
 
     store.log(job_id, f"{len(out)} images ready.")
-    return store.update(job_id, stage="drafted", drafts=out)
+    result = store.update(job_id, stage="drafted", drafts=out)
+    _thumb(job_id)
+    return result
 
 
 # --- Stage 2: analyse --------------------------------------------------------
@@ -192,7 +233,9 @@ def drafts(job_id: str) -> dict:
                     "prompt": prompt, "file": name})
 
     store.log(job_id, f"{len(out)} drafts ready for selection.")
-    return store.update(job_id, stage="drafted", drafts=out)
+    result = store.update(job_id, stage="drafted", drafts=out)
+    _thumb(job_id)
+    return result
 
 
 # --- Stage 4: final masked edit + QA ----------------------------------------
@@ -307,6 +350,8 @@ def finalise(job_id: str, draft_index: int, extra_instruction: str = "",
         qa={"stats": stats, "residual": residual, "level": level,
             "notes": notes, "review": review},
     )
+    _thumb(job_id)
+    return store.get(job_id)
 
 
 # --- Stage 5: export ---------------------------------------------------------

@@ -126,9 +126,40 @@ fix_instruction is a single edit instruction to correct the worst issue, or "".
 """
 
 
-def _b64_image(img: Image.Image, fmt: str = "PNG") -> str:
+# Vision inputs are counted in patches, and the limit is 30,000. A modern
+# phone photo blows past that on its own: a 4000x3000 shot counts around 55,000
+# and the call is rejected outright. Nothing is gained by sending full
+# resolution either - the model is reading what the product IS, not inspecting
+# it - so everything headed for a vision call gets capped first.
+VISION_MAX_EDGE = 896
+
+
+def _for_vision(img: Image.Image, max_edge: int = None) -> Image.Image:
+    max_edge = max_edge or VISION_MAX_EDGE
+    w, h = img.size
+    if max(w, h) <= max_edge:
+        return img
+    k = max_edge / max(w, h)
+    return img.resize((max(1, round(w * k)), max(1, round(h * k))), Image.LANCZOS)
+
+
+def _is_too_large(exc: Exception) -> bool:
+    text = str(exc).lower()
+    return "patches" in text or "resize the image" in text
+
+
+def _b64_image(img: Image.Image, fmt: str = "PNG", max_edge: int = None) -> str:
+    img = _for_vision(img, max_edge)
     buf = io.BytesIO()
-    img.convert("RGB" if fmt == "JPEG" else "RGBA").save(buf, format=fmt)
+    # Transparency carries no meaning to the vision model and PNG of a photo is
+    # enormous, so flatten onto white and send JPEG.
+    if fmt == "PNG" and img.mode == "RGBA":
+        canvas = Image.new("RGBA", img.size, (255, 255, 255, 255))
+        img = Image.alpha_composite(canvas, img)
+        fmt = "JPEG"
+    img = img.convert("RGB") if fmt == "JPEG" else img.convert("RGBA")
+    buf = io.BytesIO()
+    img.save(buf, format=fmt, **({"quality": 88} if fmt == "JPEG" else {}))
     return base64.b64encode(buf.getvalue()).decode()
 
 
@@ -172,16 +203,28 @@ def analyse(images: list[Image.Image], user_note: str = "") -> dict:
     if not live():
         return _mock_brief(images)
 
-    parts = [{"type": "text",
-              "text": f"Brief this product for marketplace listing photography.\n"
-                      f"Seller note: {user_note or '(none)'}"}]
-    for img in images[:6]:
-        parts.append({
-            "type": "image_url",
-            "image_url": {"url": f"data:image/png;base64,{_b64_image(img)}"},
-        })
-
-    return _chat_json(ANALYST_SYSTEM, parts, BRIEF_SCHEMA)
+    # Belt and braces. The cap above should make this impossible, but a
+    # rejected call costs the whole run, so if the API still says the image is
+    # too big we halve and try again rather than failing the job.
+    last = None
+    for edge in (VISION_MAX_EDGE, 640, 448):
+        parts = [{"type": "text",
+                  "text": f"Brief this product for marketplace listing photography.\n"
+                          f"Seller note: {user_note or '(none)'}"}]
+        for img in images[:6]:
+            parts.append({
+                "type": "image_url",
+                "image_url": {
+                    "url": f"data:image/jpeg;base64,{_b64_image(img, 'JPEG', edge)}"
+                },
+            })
+        try:
+            return _chat_json(ANALYST_SYSTEM, parts, BRIEF_SCHEMA)
+        except Exception as exc:
+            last = exc
+            if not _is_too_large(exc):
+                raise
+    raise last
 
 
 def invent(description: str) -> dict:
@@ -233,7 +276,7 @@ def qa_review(final: Image.Image, brief: dict) -> dict:
              "must_preserve": brief.get("must_preserve", []),
          })},
         {"type": "image_url",
-         "image_url": {"url": f"data:image/png;base64,{_b64_image(final)}"}},
+         "image_url": {"url": f"data:image/jpeg;base64,{_b64_image(final, 'JPEG')}"}},
     ]
     out = _chat_json(QA_SYSTEM, parts, None, max_tokens=1500)
     out.setdefault("usable", True)

@@ -314,12 +314,28 @@ def _live_turn(job_id, message, history, state, pool):
         "tools": TOOLS,
         "max_completion_tokens": 2000,
     }
-    try:
-        kwargs["reasoning_effort"] = config.REASONING_EFFORT
-        resp = client.chat.completions.create(**kwargs)
-    except Exception:
-        kwargs.pop("reasoning_effort", None)
-        resp = client.chat.completions.create(**kwargs)
+
+    # gpt-6-astra refuses function tools on /v1/chat/completions unless
+    # reasoning_effort is explicitly "none" - and omitting it doesn't help,
+    # because the model then applies its default effort and the same refusal
+    # comes back. So "none" first, then a bare call, then the configured
+    # effort for any model that wants it the other way round.
+    attempts = [
+        {**kwargs, "reasoning_effort": "none"},
+        kwargs,
+        {**kwargs, "reasoning_effort": config.REASONING_EFFORT},
+    ]
+
+    resp = None
+    last = None
+    for attempt in attempts:
+        try:
+            resp = client.chat.completions.create(**attempt)
+            break
+        except Exception as exc:
+            last = exc
+    if resp is None:
+        raise last
 
     choice = resp.choices[0].message
     actions = []

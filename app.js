@@ -21,6 +21,7 @@ async function init() {
     ? `live, ${config.draft_model}`
     : "mock mode, no API calls";
   mode.className = "meter " + config.mode;
+  mode.title = "Build " + (config.build || "unknown");
 
   if (config.auth) $("logoutform").hidden = false;
   drawSpend(config.spend);

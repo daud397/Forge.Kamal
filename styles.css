@@ -184,12 +184,30 @@ textarea:focus,input:focus{outline:2px solid var(--indigo-deep);outline-offset:1
 .log li.warn{color:var(--weld)}
 .log li.error{color:var(--madder)}
 
-.jobs{list-style:none;margin:0;padding:0;font-size:13px}
-.jobs li{padding:3px 0}
-.jobs a{color:var(--indigo);text-decoration:none}
-.jobs a:hover{text-decoration:underline}
-.jobs .stage-tag{color:var(--faint);font-size:12px}
-.nothing{color:var(--faint)}
+.history{display:flex;flex-direction:column;gap:2px;max-height:330px;overflow-y:auto}
+.run{
+  display:flex;gap:10px;align-items:center;width:100%;
+  padding:6px;border:0;border-radius:4px;background:none;
+  text-align:left;font:inherit;color:inherit;cursor:pointer;
+}
+.run:hover{background:var(--raised)}
+.run.current{background:var(--raised);box-shadow:inset 2px 0 0 var(--indigo)}
+.run-thumb{
+  width:42px;height:42px;flex:0 0 42px;border-radius:3px;object-fit:cover;
+  background:var(--well);
+}
+.run-thumb.blank{display:flex;align-items:center;justify-content:center;
+  font-size:10px;color:#4a4a4a}
+.run-text{min-width:0;flex:1}
+.run-name{
+  display:block;font-size:13px;line-height:1.35;
+  overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
+}
+.run-meta{display:block;font-size:11.5px;color:var(--faint);margin-top:1px}
+.run-meta .ok{color:var(--woad)}
+.run-meta .bad{color:var(--madder)}
+.run-meta .mid{color:var(--weld)}
+.nothing{color:var(--faint);margin:0;font-size:13px}
 
 /* ---------- renders and drafts ---------- */
 
