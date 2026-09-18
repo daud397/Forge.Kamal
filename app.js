@@ -36,6 +36,12 @@ async function init() {
   $("makefinal").onclick = makeFinal;
   $("doexport").onclick = runExport;
   $("jumptochat").onclick = () => $("chatbox").focus();
+  $("doedit").onclick = () => applyWork("edit");
+  $("doupscale").onclick = () => applyWork("upscale");
+  $("dorerun").onclick = repeatRun;
+  $("workbox").addEventListener("keydown", ev => {
+    if (ev.key === "Enter") { ev.preventDefault(); applyWork("edit"); }
+  });
 }
 
 // ---------------------------------------------------------------- intake
@@ -91,7 +97,7 @@ function beginWatching(id) {
   // Clear the previous run's panels. Without this, opening an older job leaves
   // the last run's drafts and verdict on screen next to the new one's, which
   // reads as the portal showing you the wrong images.
-  ["renders", "paint", "sheet", "proof", "briefblock", "qablock"]
+  ["renders", "paint", "sheet", "proof", "work", "briefblock", "qablock"]
     .forEach(p => { $(p).hidden = true; });
   $("exports").innerHTML = "";
   $("doexport").disabled = true;
@@ -131,6 +137,7 @@ async function refresh() {
   if (state.drafts) drawDrafts(state, scratch);
   if (state.qa) drawQA(state, scratch);
   if (state.final_file) drawProof(state, scratch);
+  if (state.drafts || state.final_file) drawWork(state);
   if (state.exports) drawExports(state);
   if (state.chat && !sending) drawChat(state.chat);
 
@@ -498,4 +505,59 @@ async function loadJobs() {
 function esc(s) {
   return String(s ?? "").replace(/[&<>"']/g, c =>
     ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+}
+
+
+// ---------------------------------------------------------------- working on an image
+
+function drawWork(state) {
+  $("work").hidden = false;
+
+  const versions = state.versions || [];
+  $("versions").innerHTML = versions.map(v => `
+    <li>
+      <span class="step">${v.step}</span>
+      <span class="what">${esc(v.action === "upscale" ? "Enlarged " + v.instruction : v.instruction)}</span>
+      <span class="dim">${esc(v.size)}</span>
+    </li>`).join("");
+
+  const latest = versions[versions.length - 1];
+  $("worksize").textContent = latest
+    ? `Now ${latest.size}`
+    : "Each change stacks on the last";
+}
+
+async function applyWork(action) {
+  if (!jobId) return;
+  const box = $("workbox");
+
+  if (action === "edit" && !box.value.trim()) {
+    box.focus();
+    return;
+  }
+
+  const body = new FormData();
+  body.append("instruction", box.value.trim());
+  body.append("action", action);
+  body.append("scale", "2");
+
+  $("doedit").disabled = true;
+  $("doupscale").disabled = true;
+  await fetch(`/api/jobs/${jobId}/enhance`, { method: "POST", body });
+
+  if (action === "edit") box.value = "";
+  setTimeout(() => {
+    $("doedit").disabled = false;
+    $("doupscale").disabled = false;
+  }, 1500);
+  watch();
+}
+
+async function repeatRun() {
+  if (!jobId) return;
+  $("dorerun").disabled = true;
+  const res = await fetch(`/api/jobs/${jobId}/rerun`, { method: "POST" });
+  $("dorerun").disabled = false;
+  if (!res.ok) return;
+  beginWatching((await res.json()).job_id);
 }

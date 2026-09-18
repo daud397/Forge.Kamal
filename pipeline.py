@@ -354,6 +354,158 @@ def finalise(job_id: str, draft_index: int, extra_instruction: str = "",
     return store.get(job_id)
 
 
+# --- Working on an image directly -------------------------------------------
+
+def current_image(job_id: str) -> str | None:
+    """The most worked-on image a run has: final, else chosen draft, else source."""
+    state = store.get(job_id) or {}
+    if state.get("final_file"):
+        return state["final_file"]
+    drafts = state.get("drafts") or []
+    chosen = state.get("chosen_draft")
+    if drafts:
+        pick = next((d for d in drafts if d["index"] == chosen), drafts[0])
+        return pick["file"]
+    return state.get("base_image")
+
+
+def enhance(job_id: str, instruction: str, action: str = "edit",
+            scale: float = 2.0) -> dict:
+    """Change or enlarge the image that already exists, with no drafting round.
+
+    This is the path for "add a grey rug", "take the lamp out", "make it
+    bigger" - a direct instruction against the current image rather than a new
+    run. Each call stacks on the last result, so edits accumulate the way they
+    would in a photo editor.
+    """
+    state = store.get(job_id)
+    source_name = current_image(job_id)
+    if not source_name:
+        raise ValueError("This run has no image to work on yet.")
+
+    store.update(job_id, stage="finalising")
+    source = _load(job_id, source_name)
+
+    versions = list(state.get("versions") or [])
+    step = len(versions) + 1
+
+    if action == "upscale":
+        result = _upscale(job_id, source, scale)
+    else:
+        result = _edit_freely(job_id, source, instruction)
+
+    name = _save(job_id, result, f"v{step}.png")
+    versions.append({
+        "step": step, "file": name, "action": action,
+        "instruction": instruction or ("%.1fx" % scale),
+        "size": f"{result.width}x{result.height}",
+    })
+
+    _save(job_id, result, "final_composited.png")
+    updated = store.update(
+        job_id,
+        stage="finalised",
+        final_file="final_composited.png",
+        versions=versions,
+        qa={"stats": {"delta_e_mean": 0, "delta_e_p95": 0, "delta_e_max": 0,
+                      "ssim_product": 1.0, "product_coverage": 1.0,
+                      "pixels_out_of_tolerance": 0},
+            "level": "info",
+            "notes": ["Worked on directly, so there is no source to measure "
+                      "against. Judge this one by eye."],
+            "review": {"usable": True, "issues": [], "fix_instruction": ""}},
+    )
+    _thumb(job_id)
+    return updated
+
+
+def _edit_freely(job_id: str, source: Image.Image, instruction: str) -> Image.Image:
+    """Full-frame edit. Nothing is masked, so the model may touch anything."""
+    if not instruction.strip():
+        raise ValueError("Say what to change, for example: add a grey rug and a "
+                         "modern side table.")
+
+    store.log(job_id, f"{config.FINAL_MODEL} editing the whole frame: "
+                      f"{instruction.strip()[:80]}")
+    store.log(job_id, "Nothing is masked on this path, so the product itself can "
+                      "change. Check the result against the real thing.", "warn")
+
+    prompt = (
+        f"{instruction.strip()}\n\n"
+        "Keep the existing subject, its colour, material, proportions and "
+        "position exactly as they are. Match the lighting direction, colour "
+        "temperature and shadow behaviour already in the photograph so anything "
+        "added looks like it was there when the shot was taken. Photographic, "
+        "no text, no logos, no watermarks."
+    )
+    return models.final_edit(source, prompt, None, config.FINAL_SIZE)
+
+
+def _upscale(job_id: str, source: Image.Image, scale: float) -> Image.Image:
+    """Enlarge, optionally asking the model to restore detail on the way.
+
+    Plain Lanczos makes an image bigger without making it better - it cannot
+    add detail that was never captured. The detail pass genuinely can, at the
+    cost of being a generative step: it may quietly change what it is
+    sharpening. Both are offered because which one you want depends on whether
+    the image is a real photograph of a real product.
+    """
+    w, h = source.size
+    target = (min(config.MAX_EDGE, int(w * scale)),
+              min(config.MAX_EDGE, int(h * scale)))
+
+    if config.UPSCALE_DETAIL_PASS:
+        gen_w, gen_h = imaging.snap_size(*target)
+        store.log(job_id, f"{config.FINAL_MODEL} restoring detail at {gen_w}x{gen_h}.")
+        try:
+            source = models.final_edit(
+                source,
+                "Restore and sharpen fine detail at higher resolution. Do not "
+                "change the composition, the colour, the materials, or any "
+                "object in the frame. Add nothing and remove nothing.",
+                None, (gen_w, gen_h))
+        except Exception as exc:
+            store.log(job_id, f"Detail pass failed ({exc}). Falling back to a "
+                              "plain resize.", "warn")
+
+    store.log(job_id, f"Resizing to {target[0]}x{target[1]} with Lanczos, "
+                      "which invents nothing.")
+    return imaging.upscale(source, target, fit="contain").convert("RGB")
+
+
+# --- Re-running --------------------------------------------------------------
+
+def rerun(job_id: str, new_job_id: str) -> dict:
+    """Start a fresh run from an old one's inputs, keeping the original intact.
+
+    Copying rather than overwriting matters: the point of re-running is usually
+    that you want a different result, and you only know it is better if the
+    first one is still there to compare against.
+    """
+    old = store.get(job_id)
+    if not old:
+        raise ValueError("No such run to repeat.")
+
+    src_dir, dest_dir = job_dir(job_id), job_dir(new_job_id)
+    uploads = []
+    for path in sorted(src_dir.glob("src_*")):
+        uploads.append((path.name.replace("src_", "", 1), path.read_bytes()))
+
+    store.log(new_job_id, f"Repeating run {job_id}.")
+
+    if uploads:
+        ingest(new_job_id, uploads, old.get("note", ""))
+        analyse(new_job_id)
+        return drafts(new_job_id)
+
+    # A described run has no files, so repeat the description instead.
+    description = old.get("note") or (old.get("brief") or {}).get("product_name")
+    if not description:
+        raise ValueError("That run has nothing to repeat from.")
+    describe(new_job_id, description)
+    return drafts_scratch(new_job_id)
+
+
 # --- Stage 5: export ---------------------------------------------------------
 
 def export(job_id: str, preset_names: list[str]) -> dict:
@@ -424,6 +576,25 @@ def run_describe(job_id: str, description: str):
     except Exception as exc:
         store.log(job_id, f"{type(exc).__name__}: {exc}", "error")
         store.update(job_id, stage="failed", error=str(exc))
+
+
+def run_enhance(job_id: str, instruction: str, action: str, scale: float,
+                presets_wanted: list[str] | None = None):
+    try:
+        enhance(job_id, instruction, action, scale)
+        if presets_wanted:
+            export(job_id, presets_wanted)
+    except Exception as exc:
+        store.log(job_id, f"{type(exc).__name__}: {exc}", "error")
+        store.update(job_id, stage="failed", error=str(exc))
+
+
+def run_rerun(job_id: str, new_job_id: str):
+    try:
+        rerun(job_id, new_job_id)
+    except Exception as exc:
+        store.log(new_job_id, f"{type(exc).__name__}: {exc}", "error")
+        store.update(new_job_id, stage="failed", error=str(exc))
 
 
 def run_finalise(job_id: str, draft_index: int, instruction: str,

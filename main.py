@@ -152,6 +152,36 @@ async def finalise(job_id: str,
     return {"ok": True}
 
 
+@app.post("/api/jobs/{job_id}/enhance")
+def enhance(job_id: str,
+            instruction: str = Form(""),
+            action: str = Form("edit"),
+            scale: float = Form(2.0),
+            presets: str = Form("")):
+    """Work on the image this run already has, with no drafting round."""
+    if not store.get(job_id):
+        raise HTTPException(404, "No such run.")
+    if action not in ("edit", "upscale"):
+        raise HTTPException(400, "action must be 'edit' or 'upscale'.")
+
+    wanted = [p for p in presets.split(",") if p.strip() in PRESETS]
+    pool.submit(pipeline.run_enhance, job_id, instruction, action,
+                max(1.0, min(4.0, scale)), wanted)
+    return {"ok": True}
+
+
+@app.post("/api/jobs/{job_id}/rerun")
+def rerun(job_id: str):
+    """Repeat a run from its original inputs, leaving the first one intact."""
+    old = store.get(job_id)
+    if not old:
+        raise HTTPException(404, "No such run.")
+
+    new_id = store.create({"created_at": None, "mode": old.get("mode", "edit")})
+    pool.submit(pipeline.run_rerun, job_id, new_id)
+    return {"job_id": new_id}
+
+
 @app.post("/api/jobs/{job_id}/export")
 def export(job_id: str, presets: str = Form(...)):
     wanted = [p for p in presets.split(",") if p.strip() in PRESETS]

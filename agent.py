@@ -112,6 +112,70 @@ TOOLS = [
     {
         "type": "function",
         "function": {
+            "name": "change_image",
+            "description": (
+                "Edit the image this run already has, directly, with no drafting "
+                "round. Use when the person wants something added, removed or "
+                "altered in the picture as it stands - props, furniture, a rug, "
+                "a different surface. Nothing is masked on this path, so say so "
+                "if the product itself could be affected."
+            ),
+            "parameters": {
+                "type": "object",
+                "additionalProperties": False,
+                "required": ["instruction"],
+                "properties": {
+                    "instruction": {
+                        "type": "string",
+                        "description": (
+                            "What to change, as a photographer would say it. "
+                            "Name the objects and where they sit, e.g. 'add a "
+                            "grey flatweave rug under the bed and a walnut side "
+                            "table on the left'."
+                        ),
+                    }
+                },
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "upscale",
+            "description": (
+                "Enlarge the current image. Use for requests about resolution, "
+                "size or sharpness. Say plainly that resizing cannot add detail "
+                "that was never captured."
+            ),
+            "parameters": {
+                "type": "object",
+                "additionalProperties": False,
+                "required": ["scale"],
+                "properties": {
+                    "scale": {
+                        "type": "number",
+                        "description": "Multiplier, 1 to 4. Use 2 unless asked otherwise.",
+                    }
+                },
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "repeat_run",
+            "description": (
+                "Start the whole run again from the same inputs, keeping this "
+                "one. Use when the person wants another go at the options "
+                "rather than a change to the current image."
+            ),
+            "parameters": {"type": "object", "additionalProperties": False,
+                           "properties": {}},
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "export",
             "description": "Render the final image into marketplace presets.",
             "parameters": {
@@ -159,6 +223,12 @@ How the pipeline works, so your answers are accurate:
 - QA measures colour difference and structural similarity numerically against the
   raw model output. A fail means the model drifted; the composite still fixes the
   delivered image.
+
+Beyond the two modes there are direct actions on whatever image the run
+already has: change_image edits it in place (add props, remove something,
+change a surface), upscale enlarges it, repeat_run starts the whole thing over
+from the same inputs. Prefer these over a fresh round of drafts when the person
+is reacting to an image in front of them.
 
 Style: brief and concrete. One or two sentences unless they asked for detail.
 Say what you did, not what you are about to do. Never invent details about their
@@ -259,7 +329,38 @@ def _run_export(job_id: str, args: dict, pool) -> str:
     return f"Exporting {', '.join(labels)}.{warning}"
 
 
+def _run_change_image(job_id: str, args: dict, pool) -> str:
+    instruction = args["instruction"]
+    if not pipeline.current_image(job_id):
+        return "There's no image to work on yet. Start a run first."
+
+    pool.submit(_guarded, job_id, pipeline.enhance, job_id, instruction, "edit", 2.0)
+    return (f"Editing the current image: {instruction}\n"
+            "Nothing is masked on this path, so the product can change too. "
+            "Worth checking against the real thing when it lands.")
+
+
+def _run_upscale(job_id: str, args: dict, pool) -> str:
+    scale = max(1.0, min(4.0, float(args.get("scale", 2))))
+    if not pipeline.current_image(job_id):
+        return "There's no image to enlarge yet."
+
+    pool.submit(_guarded, job_id, pipeline.enhance, job_id, "", "upscale", scale)
+    return (f"Enlarging {scale:g}x. Resizing makes the file bigger but cannot "
+            "recover detail that was never in the original.")
+
+
+def _run_repeat(job_id: str, args: dict, pool) -> str:
+    new_id = store.create({"created_at": None,
+                           "mode": (store.get(job_id) or {}).get("mode", "edit")})
+    pool.submit(_guarded, new_id, pipeline.rerun, job_id, new_id)
+    return "Running it again from the same inputs. This one stays in the history."
+
+
 HANDLERS = {
+    "change_image": _run_change_image,
+    "upscale": _run_upscale,
+    "repeat_run": _run_repeat,
     "set_scenes": _run_set_scenes,
     "choose_draft": _run_choose_draft,
     "revise_final": _run_revise_final,
@@ -404,6 +505,22 @@ def _offline_turn(job_id, message, state, pool):
 
     if idx is not None:
         return _run_choose_draft(job_id, {"index": idx, "instruction": ""}, pool), ["choose_draft"]
+
+    # Enlarge?
+    if any(w in text for w in ("upscale", "bigger", "resolution", "larger", "enlarge", "sharper")):
+        import re as _re
+        m2 = _re.search(r"(\d(?:\.\d)?)\s*x", text)
+        return _run_upscale(job_id, {"scale": float(m2.group(1)) if m2 else 2}, pool), ["upscale"]
+
+    # Run it again?
+    if any(w in text for w in ("run again", "rerun", "re-run", "try again", "another go")):
+        return _run_repeat(job_id, {}, pool), ["repeat_run"]
+
+    # Add or remove something in the picture?
+    if state.get("final_file") and any(
+            w in text for w in ("add ", "remove ", "put ", "take out", "prop", "rug",
+                                "table", "lamp", "plant", "cushion", "chair")):
+        return _run_change_image(job_id, {"instruction": message}, pool), ["change_image"]
 
     # Revise the finished image?
     if state.get("final_file") and any(

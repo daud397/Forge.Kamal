@@ -93,6 +93,26 @@ to. The numbers still appear, measuring how far the refinement pass moved from
 the option you approved, but they are reported as information rather than a
 pass or fail. The verdict there comes from the reviewer instead.
 
+## Working on an image directly
+
+Once a run has produced something, the Work on this image panel edits it in
+place with no drafting round:
+
+- **Apply** with an instruction such as *add a grey flatweave rug under the bed
+  and a walnut side table on the left*. Each change stacks on the last, and the
+  panel lists the chain.
+- **Enlarge 2x** resizes with Lanczos. It makes the file bigger; it cannot
+  recover detail that was never captured. Set `UPSCALE_DETAIL_PASS=1` to run a
+  generative detail pass first, which genuinely adds detail at the cost of being
+  a generative step that can change what it sharpens.
+- **Run again from scratch** repeats the whole run from the original inputs and
+  keeps the first one, so you can compare rather than hope.
+
+Nothing is masked on the edit path. The model can touch the product as well as
+the scene, which is the price of being able to add and remove things freely.
+That is why the quality check reports "worked on directly" rather than a
+verdict — there is no longer a source to measure against.
+
 ## Driving it by chat
 
 The right-hand panel takes plain instructions instead of clicks. Astra is given
@@ -108,6 +128,9 @@ What it understands:
 | "give me three options, one warm, one clinical, one outdoors" | three scenes at once |
 | "go with the second one but shorten the shadow" | picks that draft, runs the masked final edit |
 | "make the key light softer" | re-runs the final on the same draft |
+| "add a grey rug and a modern side table" | edits the current image in place |
+| "make it bigger" / "2x" | enlarges it |
+| "run it again" | repeats from the same inputs |
 | "export for shopify and etsy" | renders those presets |
 | "why did the quality check fail?" | explains the measured numbers |
 

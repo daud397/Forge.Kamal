@@ -17,7 +17,7 @@ for d in (UPLOADS, RENDERS, DRAFTS, FINALS, EXPORTS):
 # Bump this whenever the code changes. /api/status reports it, so there is a
 # way to confirm which build is actually running rather than inferring it from
 # behaviour - which has already cost us a debugging session once.
-BUILD = "2026-09-18d"
+BUILD = "2026-09-18e"
 
 # --- Models -----------------------------------------------------------------
 REASONING_MODEL = os.getenv("REASONING_MODEL", "gpt-6-astra")
@@ -64,6 +64,11 @@ CAMERA_ANGLES = {
     "front": (0.0, 5.0),
     "top": (35.0, 62.0),
 }
+
+# Upscaling: a generative detail pass genuinely adds detail, but it is a
+# generative step and can change what it sharpens. Off means Lanczos only,
+# which enlarges honestly and invents nothing.
+UPSCALE_DETAIL_PASS = os.getenv("UPSCALE_DETAIL_PASS", "").lower() in ("1", "true", "yes")
 
 # --- QA tolerances ----------------------------------------------------------
 DELTA_E_PASS = float(os.getenv("DELTA_E_PASS", "2.0"))     # imperceptible to most viewers
