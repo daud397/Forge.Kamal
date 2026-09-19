@@ -207,6 +207,25 @@ def rerun(job_id: str):
     return {"job_id": new_id}
 
 
+@app.post("/api/jobs/{job_id}/use-as-is")
+def use_as_is(job_id: str, draft_index: int = Form(...), presets: str = Form("")):
+    """Take a draft exactly as it is. No generation, no cost."""
+    if not store.get(job_id):
+        raise HTTPException(404, "No such run.")
+    wanted = [p for p in presets.split(",") if p.strip() in PRESETS]
+    pool.submit(pipeline.run_use_as_is, job_id, draft_index, wanted)
+    return {"ok": True}
+
+
+@app.post("/api/jobs/{job_id}/redraft")
+def redraft(job_id: str):
+    """Another set of options from the same brief."""
+    if not store.get(job_id):
+        raise HTTPException(404, "No such run.")
+    pool.submit(pipeline.run_redraft, job_id)
+    return {"ok": True}
+
+
 @app.post("/api/jobs/{job_id}/export")
 def export(job_id: str, presets: str = Form(...)):
     wanted = [p for p in presets.split(",") if p.strip() in PRESETS]

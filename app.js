@@ -49,6 +49,10 @@ function wire() {
     $("lightbox").hidden = true;
     if (lbUse) lbUse();
   };
+  $("lbasis").onclick = () => {
+    $("lightbox").hidden = true;
+    if (lbAsIs) lbAsIs();
+  };
 
   // Only the backdrop itself closes the viewer. Testing ev.target.id !== "lbimg"
   // meant every click on the action bar closed it, which made Edit and Use look
@@ -269,10 +273,12 @@ function render(state) {
       .map(([name, file]) => ({ file, label: name })), state, "three");
   }
 
-  if (state.drafts && !state.final_file) {
-    imageCard(state.mode === "scratch"
-      ? "Click one to download, edit, or use it"
-      : "Click a scene to download, edit, or use it",
+  // Options stay visible after a final is made. Hiding them meant that not
+  // liking the result left nowhere to go except starting over.
+  if (state.drafts && state.drafts.length) {
+    imageCard(state.final_file
+      ? "The options are still here — click another to use it instead"
+      : "Click one to download, edit, or use it",
       state.drafts, state, state.drafts.length > 2 ? "three" : "two", true);
   }
 
@@ -335,6 +341,7 @@ function imageCard(heading, items, state, cols, pickable) {
     b.onclick = () => zoom(`/api/jobs/${jobId}/file/${it.file}`, {
       label: it.label,
       use: pickable ? () => choose(it.index, it.label) : null,
+      asIs: pickable ? () => useAsIs(it.index, it.label) : null,
     });
     grid.appendChild(b);
   });
@@ -352,7 +359,14 @@ function finalCard(state) {
     </div>`;
 
   const qa = state.qa;
-  if (qa) {
+  if (state.used_as_is) {
+    const n = document.createElement("p");
+    n.className = "verdict";
+    n.innerHTML = `<span class="tag info">Taken as-is</span>`;
+    n.appendChild(document.createTextNode(
+      " — no generation was run, so this is exactly the option you picked."));
+    card.appendChild(n);
+  } else if (qa) {
     const words = { pass: "Colour and shape held", warn: "Worth a look",
                     fail: "The model drifted", info: "Judge this by eye" };
     const v = document.createElement("p");
@@ -367,6 +381,7 @@ function finalCard(state) {
   const acts = document.createElement("div");
   acts.className = "actions";
 
+  add(acts, "Another set of options", moreOptions);
   add(acts, "Edit image", () =>
     openEditor(`/api/jobs/${jobId}/file/${state.final_file}?v=${(state.versions || []).length}`));
   add(acts, "Enlarge 2×", () => enhance("upscale"));
@@ -416,6 +431,23 @@ async function choose(index, label) {
   watch();
 }
 
+async function useAsIs(index, label) {
+  say("user", `Use ${label} as it is`);
+  const body = new FormData();
+  body.append("draft_index", index);
+  body.append("presets", "");
+  await fetch(`/api/jobs/${jobId}/use-as-is`, { method: "POST", body });
+  lastRender = "";
+  watch();
+}
+
+async function moreOptions() {
+  say("user", "Show me another set");
+  await fetch(`/api/jobs/${jobId}/redraft`, { method: "POST" });
+  lastRender = "";
+  watch();
+}
+
 async function enhance(action) {
   const body = new FormData();
   body.append("instruction", "");
@@ -445,7 +477,7 @@ async function repeat() {
   watch();
 }
 
-let lbUse = null;
+let lbUse = null, lbAsIs = null;
 
 function zoom(src, opts = {}) {
   $("lbimg").src = src;
@@ -454,7 +486,9 @@ function zoom(src, opts = {}) {
   $("lbdownload").download = (opts.label || "image").replace(/[^a-z0-9]+/gi, "-").toLowerCase() + ".png";
 
   lbUse = opts.use || null;
+  lbAsIs = opts.asIs || null;
   $("lbuse").hidden = !lbUse;
+  $("lbasis").hidden = !lbAsIs;
 
   $("lightbox").hidden = false;
 }

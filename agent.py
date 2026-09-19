@@ -141,6 +141,40 @@ TOOLS = [
     {
         "type": "function",
         "function": {
+            "name": "use_as_is",
+            "description": (
+                "Take one of the options exactly as it is, with no further "
+                "generation. Use when the person says an option is already fine, "
+                "good enough, or asks to keep it without changes. Costs nothing "
+                "and cannot drift from what they saw."
+            ),
+            "parameters": {
+                "type": "object",
+                "additionalProperties": False,
+                "required": ["index"],
+                "properties": {
+                    "index": {"type": "integer", "description": "Zero-based option index."},
+                },
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "more_options",
+            "description": (
+                "Generate another set of options from the same brief. Use when "
+                "the person doesn't like what they were shown but hasn't asked "
+                "for anything specifically different - 'try again', 'show me "
+                "others', 'none of these'."
+            ),
+            "parameters": {"type": "object", "additionalProperties": False,
+                           "properties": {}},
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "upscale",
             "description": (
                 "Enlarge the current image. Use for requests about resolution, "
@@ -357,7 +391,27 @@ def _run_repeat(job_id: str, args: dict, pool) -> str:
     return "Running it again from the same inputs. This one stays in the history."
 
 
+def _run_use_as_is(job_id: str, args: dict, pool) -> str:
+    state = store.get(job_id)
+    idx = int(args["index"])
+    drafts = state.get("drafts") or []
+    if not any(d["index"] == idx for d in drafts):
+        return f"There's no option {idx + 1}. There are {len(drafts)}."
+
+    label = next(d["label"] for d in drafts if d["index"] == idx)
+    pool.submit(_guarded, job_id, pipeline.use_as_is, job_id, idx)
+    return (f"Taking {label} exactly as it is. No generation, so it costs "
+            "nothing and stays precisely the image you picked.")
+
+
+def _run_more_options(job_id: str, args: dict, pool) -> str:
+    pool.submit(_guarded, job_id, pipeline.redraft, job_id)
+    return "Generating another set from the same brief."
+
+
 HANDLERS = {
+    "use_as_is": _run_use_as_is,
+    "more_options": _run_more_options,
     "change_image": _run_change_image,
     "upscale": _run_upscale,
     "repeat_run": _run_repeat,
@@ -504,6 +558,18 @@ def _offline_turn(job_id, message, state, pool):
 
     if idx is not None:
         return _run_choose_draft(job_id, {"index": idx, "instruction": ""}, pool), ["choose_draft"]
+
+    # Happy with one as it stands?
+    if any(w in text for w in ("as is", "as-is", "keep it", "good enough",
+                               "that one is fine", "fine as", "no changes")):
+        import re as _re
+        m3 = _re.search(r"\b(\d)\b", text)
+        return _run_use_as_is(job_id, {"index": int(m3.group(1)) - 1 if m3 else 0}, pool), ["use_as_is"]
+
+    # Not these?
+    if any(w in text for w in ("more options", "other options", "none of these",
+                               "show me others", "different ones", "try other")):
+        return _run_more_options(job_id, {}, pool), ["more_options"]
 
     # Enlarge?
     if any(w in text for w in ("upscale", "bigger", "resolution", "larger", "enlarge", "sharper")):

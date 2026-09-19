@@ -357,6 +357,65 @@ def finalise(job_id: str, draft_index: int, extra_instruction: str = "",
     return updated
 
 
+# --- Taking a draft as it stands ---------------------------------------------
+
+def use_as_is(job_id: str, draft_index: int) -> dict:
+    """Promote a draft to final without generating anything.
+
+    The final pass exists to add fidelity the drafts lack, but a draft is often
+    already the shot - the composition is right and nothing needs changing.
+    Running a generation to arrive back where you started costs money and can
+    only move the image away from what you approved.
+
+    No model call happens here at all. Exports still enlarge with Lanczos, so
+    the delivered files are full size.
+    """
+    state = store.get(job_id)
+    chosen = next((d for d in (state.get("drafts") or [])
+                   if d["index"] == draft_index), None)
+    if not chosen:
+        raise ValueError(f"There is no option {draft_index + 1} in this run.")
+
+    store.update(job_id, stage="finalising")
+    store.log(job_id, f"Taking '{chosen['label']}' as it stands. No generation, "
+                      "so nothing costs anything and nothing can drift.")
+
+    img = _load(job_id, chosen["file"])
+    _save(job_id, img, "final_composited.png")
+
+    updated = store.update(
+        job_id,
+        stage="finalised",
+        chosen_draft=draft_index,
+        final_file="final_composited.png",
+        used_as_is=True,
+        qa={"stats": {"delta_e_mean": 0.0, "delta_e_p95": 0.0, "delta_e_max": 0.0,
+                      "ssim_product": 1.0, "product_coverage": 1.0,
+                      "pixels_out_of_tolerance": 0},
+            "level": "info",
+            "notes": ["Taken straight from the option you picked. Nothing was "
+                      "regenerated, so this is exactly the image you chose."],
+            "review": {"usable": True, "issues": [], "fix_instruction": ""}},
+    )
+    _thumb(job_id)
+    return updated
+
+
+def redraft(job_id: str) -> dict:
+    """Another set of options from the same brief.
+
+    The models are stochastic, so the same prompts give different photographs.
+    This is the cheap way to say "not these" without rewriting the brief.
+    """
+    state = store.get(job_id)
+    if not (state.get("brief") or {}).get("scene_prompts"):
+        raise ValueError("This run has no brief to generate from.")
+
+    store.log(job_id, "Generating another set from the same brief.")
+    store.update(job_id, final_file=None, chosen_draft=None, qa=None)
+    return drafts_for_mode(job_id)
+
+
 # --- Working on an image directly -------------------------------------------
 
 def current_image(job_id: str) -> str | None:
@@ -695,6 +754,25 @@ def run_enhance(job_id: str, instruction: str, action: str, scale: float,
         enhance(job_id, instruction, action, scale, region_png, detail, source_file)
         if presets_wanted:
             export(job_id, presets_wanted)
+    except Exception as exc:
+        store.log(job_id, f"{type(exc).__name__}: {exc}", "error")
+        store.update(job_id, stage="failed", error=str(exc))
+
+
+def run_use_as_is(job_id: str, draft_index: int,
+                  presets_wanted: list[str] | None = None):
+    try:
+        use_as_is(job_id, draft_index)
+        if presets_wanted:
+            export(job_id, presets_wanted)
+    except Exception as exc:
+        store.log(job_id, f"{type(exc).__name__}: {exc}", "error")
+        store.update(job_id, stage="failed", error=str(exc))
+
+
+def run_redraft(job_id: str):
+    try:
+        redraft(job_id)
     except Exception as exc:
         store.log(job_id, f"{type(exc).__name__}: {exc}", "error")
         store.update(job_id, stage="failed", error=str(exc))
