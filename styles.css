@@ -322,3 +322,7 @@ button{font:inherit;cursor:pointer}
 }
 .ed-do input:focus{outline:none;border-color:var(--indigo)}
 .send.wide{width:auto;padding:0 18px;height:auto;border-radius:10px;font-weight:600}
+
+.chips-label{margin:16px 0 8px;font-size:12px;color:var(--faint)}
+.intro .chips{margin-bottom:4px}
+.nudge{border-color:var(--indigo);color:var(--indigo)}

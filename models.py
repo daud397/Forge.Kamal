@@ -99,10 +99,23 @@ You receive renders or photographs of one product. Produce a factual brief.
 Rules:
 - Describe only what is visible. Never invent a brand, model number or material.
 - dominant_colours must be sampled from the image, as hex, most prominent first.
+- For textiles, surface_pattern is the most important field you write. It is what
+  a later model uses to reproduce the cloth, so be specific enough to redraw
+  from: name the motif, its approximate size relative to a pillowcase, how it
+  repeats (scattered, half-drop, straight, directional), the spacing between
+  motifs, the number of colours in the motif, whether the print is placed or
+  all-over, and what the reverse side looks like if any of it is visible.
+  "Floral print" is useless. "Small scattered floral sprigs about 4cm across,
+  five per pillow width, two-colour on a pale sage ground, plain white reverse"
+  is the standard.
 - must_preserve lists the details an editing model must not alter: geometry,
   proportions, label text verbatim, logo placement, surface pattern, finish.
-- scene_prompts: three distinct background and lighting treatments suited to the
-  product's category and price point. Each prompt describes the SCENE ONLY -
+- The seller's note is an instruction, not background reading. If it names a
+  setting, a colour, an angle, a mood or a constraint, every scene prompt must
+  obey it. If it says the product's design must be matched exactly, say so in
+  each prompt rather than describing an alternative.
+- scene_prompts: distinct background and lighting treatments suited to the
+  product's category and price point, and to whatever the note asked for. Each prompt describes the SCENE ONLY -
   surface, backdrop, light direction, quality and colour temperature, shadow
   behaviour, camera framing. Never describe the product itself; it is composited
   in unchanged. No text, no logos, no props that imply a brand.
@@ -237,8 +250,9 @@ def invent(description: str) -> dict:
     return _chat_json(INVENT_SYSTEM, parts, BRIEF_SCHEMA)
 
 
-def generate_scratch(prompts: list[str],
-                     size: tuple[int, int] = None) -> list[tuple[str, Image.Image]]:
+def generate_scratch(prompts: list[str], size: tuple[int, int] = None,
+                     directive: str = "",
+                     brief: dict | None = None) -> list[tuple[str, Image.Image]]:
     """Text to image, no source. Flare, one call per scene."""
     size = size or config.DRAFT_SIZE
     if not live():
@@ -251,8 +265,9 @@ def generate_scratch(prompts: list[str],
     def one(prompt):
         result = client.images.generate(
             model=config.DRAFT_MODEL,
-            prompt=f"{prompt}\n\nCommercial product photograph. No text, no logos, "
-                   f"no watermarks, no visible brand marks, no hands or people.",
+            prompt=f"{compose_prompt(prompt, directive, brief, scratch=True)}\n\n"
+                   "Commercial product photograph. No text, no logos, no "
+                   "watermarks, no visible brand marks, no hands or people.",
             size=dims,
             quality=config.DRAFT_QUALITY,
             output_format="png",
@@ -285,6 +300,51 @@ def qa_review(final: Image.Image, brief: dict) -> dict:
 
 
 # --- Image generation and editing -------------------------------------------
+
+def compose_prompt(scene: str, directive: str = "", brief: dict | None = None,
+                   scratch: bool = False) -> str:
+    """Build what the image model actually receives.
+
+    Three things belong in every generation prompt and only one of them used to
+    be there:
+
+    1. What the person asked for, in their own words. Paraphrasing a brief like
+       "pick the exact same colour, motif and reversible design" into a scene
+       sentence loses precisely the constraints they cared about.
+    2. The facts read off the reference image - sampled hex colours, the motif,
+       the repeat. The analysis step extracts these and they were going unused.
+    3. The scene.
+
+    Order matters. The strictest requirement goes first, because an instruction
+    buried under scene description gets weighted like set dressing.
+    """
+    parts = []
+
+    if directive.strip():
+        parts.append("WHAT IS REQUIRED, in the seller's own words:\n"
+                     + directive.strip())
+
+    if brief:
+        facts = []
+        colours = brief.get("dominant_colours") or []
+        if colours:
+            facts.append("Colours, to be matched exactly: " + ", ".join(
+                f"{c.get('name', '')} {c.get('hex', '')}".strip() for c in colours[:5]))
+        if brief.get("surface_pattern"):
+            facts.append("Pattern and repeat: " + brief["surface_pattern"])
+        if brief.get("materials"):
+            facts.append("Material: " + ", ".join(brief["materials"][:3]))
+        keep = brief.get("must_preserve") or []
+        if keep:
+            facts.append("Must not change: " + "; ".join(keep[:6]))
+        if facts:
+            label = ("THE PRODUCT TO RENDER:" if scratch
+                     else "THE PRODUCT IN THE SUPPLIED IMAGE, to be reproduced exactly:")
+            parts.append(label + "\n" + "\n".join(facts))
+
+    parts.append("SCENE AND LIGHTING:\n" + scene)
+    return "\n\n".join(parts)
+
 
 PRESERVE_CLAUSE = (
     "Change the background and lighting environment only. Do not alter the product: "
@@ -319,7 +379,8 @@ def _decode(item) -> Image.Image:
 
 
 def generate_drafts(source: Image.Image, prompts: list[str],
-                    size: tuple[int, int] = None) -> list[tuple[str, Image.Image]]:
+                    size: tuple[int, int] = None, directive: str = "",
+                    brief: dict | None = None) -> list[tuple[str, Image.Image]]:
     """Flare, one call per scene prompt. Fast and cheap enough to throw away."""
     size = size or config.DRAFT_SIZE
     if not live():
@@ -337,7 +398,7 @@ def generate_drafts(source: Image.Image, prompts: list[str],
         result = client.images.edit(
             model=config.DRAFT_MODEL,
             image=[("source.png", payload, "image/png")],
-            prompt=f"{prompt}\n\n{PRESERVE_CLAUSE}",
+            prompt=f"{compose_prompt(prompt, directive, brief)}\n\n{PRESERVE_CLAUSE}",
             size=dims,
             quality=config.DRAFT_QUALITY,
             output_format="png",

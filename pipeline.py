@@ -170,10 +170,14 @@ def drafts_scratch(job_id: str) -> dict:
     if not scenes:
         raise ValueError("The brief contains no scenes to generate.")
 
-    store.log(job_id, f"{config.DRAFT_MODEL} generating {len(scenes)} images at "
-                      f"{config.DRAFT_SIZE[0]}x{config.DRAFT_SIZE[1]}.")
+    note = state.get("note", "")
+    size = gen_size(note, config.DRAFT_SIZE)
 
-    results = models.generate_scratch([sc["prompt"] for sc in scenes])
+    store.log(job_id, f"{config.DRAFT_MODEL} generating {len(scenes)} images at "
+                      f"{size[0]}x{size[1]}.")
+
+    results = models.generate_scratch([sc["prompt"] for sc in scenes], size,
+                                      directive=note, brief=brief)
     out = []
     for i, (prompt, img) in enumerate(results):
         name = _save(job_id, img, f"draft_{i}.png")
@@ -210,6 +214,14 @@ def drafts_for_mode(job_id: str) -> dict:
     return drafts_scratch(job_id) if state.get("mode") == "scratch" else drafts(job_id)
 
 
+def gen_size(note: str, default: tuple[int, int]) -> tuple[int, int]:
+    """Honour a requested aspect ratio, falling back to the configured size."""
+    ratio = imaging.ratio_from_text(note)
+    if ratio is None:
+        return default
+    return imaging.size_for_ratio(ratio, default[0] * default[1])
+
+
 def drafts(job_id: str) -> dict:
     state = store.get(job_id)
     brief = state.get("brief") or {}
@@ -222,10 +234,16 @@ def drafts(job_id: str) -> dict:
     if not prompts:
         raise ValueError("The brief contains no scene prompts to draft from.")
 
-    store.log(job_id, f"{config.DRAFT_MODEL} generating {len(prompts)} drafts at "
-                      f"{config.DRAFT_SIZE[0]}x{config.DRAFT_SIZE[1]}, quality {config.DRAFT_QUALITY}.")
+    note = state.get("note", "")
+    size = gen_size(note, config.DRAFT_SIZE)
+    if size != config.DRAFT_SIZE:
+        store.log(job_id, f"You asked for a specific aspect ratio, so these are "
+                          f"{size[0]}x{size[1]}.")
 
-    results = models.generate_drafts(base, prompts)
+    store.log(job_id, f"{config.DRAFT_MODEL} generating {len(prompts)} drafts at "
+                      f"{size[0]}x{size[1]}, quality {config.DRAFT_QUALITY}.")
+
+    results = models.generate_drafts(base, prompts, size, directive=note, brief=brief)
     out = []
     for i, (prompt, img) in enumerate(results):
         name = _save(job_id, img, f"draft_{i}.png")
@@ -254,7 +272,7 @@ def finalise(job_id: str, draft_index: int, extra_instruction: str = "",
     # In scratch mode the approved draft IS the source: the refinement pass
     # works on the image the seller picked, not on any uploaded file.
     base = _load(job_id, chosen["file"] if scratch else state["base_image"])
-    size = config.FINAL_SIZE
+    size = gen_size(state.get("note", ""), config.FINAL_SIZE)
 
     # Where does the product mask come from?
     if scratch:

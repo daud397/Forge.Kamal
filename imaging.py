@@ -246,6 +246,44 @@ def composite_preserve(original: Image.Image, edited: Image.Image,
 
 # --- Sizing ------------------------------------------------------------------
 
+RATIO_WORDS = {
+    "square": 1.0, "1:1": 1.0, "1x1": 1.0,
+    "4:5": 0.8, "5:4": 1.25, "3:4": 0.75, "4:3": 4 / 3,
+    "2:3": 2 / 3, "3:2": 1.5, "9:16": 0.5625, "16:9": 16 / 9,
+    "portrait": 0.8, "landscape": 1.5, "vertical": 0.8, "horizontal": 1.5,
+    "wide": 16 / 9,
+}
+
+
+def ratio_from_text(text: str) -> float | None:
+    """Pull a requested aspect ratio out of what the person typed.
+
+    They ask for "1:1 aspect ratio" in plain words and it is a hard requirement
+    for a marketplace listing, not a stylistic hint, so it has to survive into
+    the API call rather than being left to the model to honour or ignore.
+    """
+    import re
+    t = (text or "").lower()
+
+    m = re.search(r"\b(\d{1,2})\s*[:x]\s*(\d{1,2})\b", t)
+    if m:
+        w, h = int(m.group(1)), int(m.group(2))
+        if w and h and 0.25 <= w / h <= 4:
+            return w / h
+
+    for word, r in RATIO_WORDS.items():
+        if word in t:
+            return r
+    return None
+
+
+def size_for_ratio(ratio: float, target_pixels: int = 1_500_000) -> tuple[int, int]:
+    """A legal generation size at the requested shape."""
+    import math
+    h = math.sqrt(target_pixels / ratio)
+    return snap_size(round(h * ratio), round(h))
+
+
 def snap_size(width: int, height: int) -> tuple[int, int]:
     """Coerce a requested size into something the API will accept."""
     def snap(v):

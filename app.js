@@ -71,7 +71,7 @@ function wire() {
   });
 
   document.querySelectorAll(".chip").forEach(c => {
-    c.onclick = () => { $("box").value = c.dataset.say; submit(); };
+    c.onclick = () => { $("box").value = c.dataset.say; $("box").focus(); };
   });
 }
 
@@ -92,17 +92,29 @@ function startFresh() {
 function introBlock() {
   const d = document.createElement("div");
   d.className = "intro";
+
+  const shots = (config.templates || []).map(t =>
+    `<button class="chip" data-say="${esc(t.text)}">${esc(t.label)}</button>`).join("");
+
   d.innerHTML = `
     <h1>What are we photographing?</h1>
-    <p>Describe a product and it gets made from nothing, or attach a photo or
-       CAD file to work from the real thing.</p>
+    <p>Attach a duvet or fabric photo and pick a standard shot, or describe a
+       product to make one from nothing.</p>
+    <p class="chips-label">Standard shots — attach a reference first</p>
+    <div class="chips">${shots}</div>
+    <p class="chips-label">Or from nothing</p>
     <div class="chips">
-      <button class="chip" data-say="a matte charcoal linen cushion cover, 45cm square, hidden zip">A charcoal linen cushion cover</button>
-      <button class="chip" data-say="a stonewashed sand cotton duvet set on a made bed, UK bedroom">A sand cotton duvet set</button>
-      <button class="chip" data-say="a grey cheetah print duvet set on a made bed in a modern UK bedroom">A grey cheetah print duvet set</button>
+      <button class="chip" data-say="a stonewashed sand cotton duvet set on a made bed, UK bedroom, 1:1 aspect ratio">A sand cotton duvet set</button>
+      <button class="chip" data-say="a matte charcoal linen cushion cover, 45cm square, hidden zip">A charcoal linen cushion</button>
     </div>`;
   setTimeout(() => d.querySelectorAll(".chip").forEach(c => {
-    c.onclick = () => { $("box").value = c.dataset.say; submit(); };
+    c.onclick = () => {
+      $("box").value = c.dataset.say;
+      // Standard shots work from a reference photo, so load the wording and let
+      // them attach the file rather than firing a run with nothing to match.
+      if (attached.length) submit();
+      else { $("box").focus(); $("attach").classList.add("nudge"); }
+    };
   }), 0);
   return d;
 }
@@ -115,7 +127,8 @@ function showAttached() {
   if (!attached.length) { note.hidden = true; return; }
   note.hidden = false;
   note.textContent = attached.map(f => f.name).join(", ") +
-    " — add a note if useful, then send.";
+    " — pick a standard shot or describe the change, then send.";
+  $("attach").classList.remove("nudge");
 }
 
 async function submit() {

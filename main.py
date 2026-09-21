@@ -8,7 +8,7 @@ from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
 
 import agent, auth, budget, config, models, pipeline, store
-from presets import PRESETS
+from presets import PRESETS, SHOT_TEMPLATES
 
 app = FastAPI(title="Listing Forge")
 pool = ThreadPoolExecutor(max_workers=int(os.getenv("WORKERS", "2")))
@@ -84,6 +84,7 @@ def status():
                        "delta_e_warn": config.DELTA_E_WARN,
                        "ssim_pass": config.SSIM_PASS},
         "auth": auth.required(),
+        "templates": SHOT_TEMPLATES,
         "spend": budget.summary(),
         "presets": {k: {"label": v["label"],
                         "size": f"{v['size'][0]}x{v['size'][1]}",
