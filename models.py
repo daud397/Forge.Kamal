@@ -301,8 +301,24 @@ def qa_review(final: Image.Image, brief: dict) -> dict:
 
 # --- Image generation and editing -------------------------------------------
 
+def _as_files(images) -> list[tuple[str, bytes, str]]:
+    """All reference images, in the order the seller attached them.
+
+    Order is the contract: prompts written in this mill say "first image" and
+    "second image", and that must mean attachment order, every time.
+    """
+    if not isinstance(images, (list, tuple)):
+        images = [images]
+    files = []
+    for i, img in enumerate(images):
+        buf = io.BytesIO()
+        img.convert("RGBA").save(buf, format="PNG")
+        files.append((f"image_{i + 1}.png", buf.getvalue(), "image/png"))
+    return files
+
+
 def compose_prompt(scene: str, directive: str = "", brief: dict | None = None,
-                   scratch: bool = False) -> str:
+                   scratch: bool = False, n_images: int = 1) -> str:
     """Build what the image model actually receives.
 
     Three things belong in every generation prompt and only one of them used to
@@ -319,6 +335,12 @@ def compose_prompt(scene: str, directive: str = "", brief: dict | None = None,
     buried under scene description gets weighted like set dressing.
     """
     parts = []
+
+    if n_images > 1:
+        parts.append(f"{n_images} reference images are attached, in the order the "
+                     "seller attached them. 'First image' or 'image 1' means the "
+                     "first attachment, 'second image' or 'image 2' the second, "
+                     "and so on.")
 
     if directive.strip():
         parts.append("WHAT IS REQUIRED, in the seller's own words:\n"
@@ -378,27 +400,28 @@ def _decode(item) -> Image.Image:
     return Image.open(io.BytesIO(base64.b64decode(item.b64_json))).convert("RGBA")
 
 
-def generate_drafts(source: Image.Image, prompts: list[str],
+def generate_drafts(source, prompts: list[str],
                     size: tuple[int, int] = None, directive: str = "",
                     brief: dict | None = None) -> list[tuple[str, Image.Image]]:
+    """source is one image or an ordered list; every one goes to the model."""
     """Flare, one call per scene prompt. Fast and cheap enough to throw away."""
     size = size or config.DRAFT_SIZE
+    first = source[0] if isinstance(source, (list, tuple)) else source
     if not live():
-        return [(p, _mock_scene(source, p, size)) for p in prompts]
+        return [(p, _mock_scene(first, p, size)) for p in prompts]
 
     from imaging import size_string
     client = _client()
 
-    buf = io.BytesIO()
-    source.convert("RGBA").save(buf, format="PNG")
-    payload = buf.getvalue()
+    files = _as_files(source)
     dims = size_string(*size)
 
     def one(prompt):
         result = client.images.edit(
             model=config.DRAFT_MODEL,
-            image=[("source.png", payload, "image/png")],
-            prompt=f"{compose_prompt(prompt, directive, brief)}\n\n{PRESERVE_CLAUSE}",
+            image=files,
+            prompt=f"{compose_prompt(prompt, directive, brief, n_images=len(files))}"
+                   f"\n\n{PRESERVE_CLAUSE}",
             size=dims,
             quality=config.DRAFT_QUALITY,
             output_format="png",
@@ -408,9 +431,15 @@ def generate_drafts(source: Image.Image, prompts: list[str],
     return _in_parallel(one, prompts, config.DRAFT_MODEL)
 
 
-def final_edit(source: Image.Image, prompt: str, mask_png: bytes | None,
-               size: tuple[int, int] = None) -> Image.Image:
-    """Sunburst with the mask. This is the one that has to hold up."""
+def final_edit(source, prompt: str, mask_png: bytes | None,
+               size: tuple[int, int] = None,
+               extra_refs: list[Image.Image] | None = None) -> Image.Image:
+    """Sunburst with the mask. This is the one that has to hold up.
+
+    The first image is the one being edited - a mask, if given, applies to it.
+    extra_refs ride along so an instruction like "match the first image's
+    design" still has the first image to look at during the final pass.
+    """
     size = size or config.FINAL_SIZE
     if not live():
         return _mock_scene(source, prompt, size, refine=True)
@@ -420,10 +449,15 @@ def final_edit(source: Image.Image, prompt: str, mask_png: bytes | None,
 
     buf = io.BytesIO()
     source.convert("RGBA").resize(size, Image.LANCZOS).save(buf, format="PNG")
+    files = [("image_1.png", buf.getvalue(), "image/png")]
+    for i, ref in enumerate(extra_refs or []):
+        rb = io.BytesIO()
+        ref.convert("RGBA").save(rb, format="PNG")
+        files.append((f"image_{i + 2}.png", rb.getvalue(), "image/png"))
 
     kwargs = dict(
         model=config.FINAL_MODEL,
-        image=[("source.png", buf.getvalue(), "image/png")],
+        image=files,
         prompt=f"{prompt}\n\n{PRESERVE_CLAUSE}",
         size=size_string(*size),
         quality=config.FINAL_QUALITY,

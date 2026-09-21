@@ -227,7 +227,8 @@ def drafts(job_id: str) -> dict:
     brief = state.get("brief") or {}
     store.update(job_id, stage="drafting")
 
-    base = _load(job_id, state["base_image"])
+    sources = [_load(job_id, n) for n in (state.get("photos") or [])] \
+        or [_load(job_id, state["base_image"])]
     prompts = [p["prompt"] for p in brief.get("scene_prompts", [])][:config.DRAFT_COUNT]
     labels = [p.get("label", f"Option {i+1}") for i, p in enumerate(brief.get("scene_prompts", []))]
 
@@ -243,7 +244,12 @@ def drafts(job_id: str) -> dict:
     store.log(job_id, f"{config.DRAFT_MODEL} generating {len(prompts)} drafts at "
                       f"{size[0]}x{size[1]}, quality {config.DRAFT_QUALITY}.")
 
-    results = models.generate_drafts(base, prompts, size, directive=note, brief=brief)
+    if len(sources) > 1:
+        store.log(job_id, f"Sending all {len(sources)} images to the model in the "
+                          "order you attached them - 'first image' means the first "
+                          "one you attached.")
+    results = models.generate_drafts(sources, prompts, size, directive=note,
+                                     brief=brief)
     out = []
     for i, (prompt, img) in enumerate(results):
         name = _save(job_id, img, f"draft_{i}.png")
@@ -268,11 +274,16 @@ def finalise(job_id: str, draft_index: int, extra_instruction: str = "",
         raise ValueError(f"No draft with index {draft_index}.")
 
     scratch = state.get("mode") == "scratch"
+    multi_ref = len(state.get("photos") or []) > 1
 
     # In scratch mode the approved draft IS the source: the refinement pass
     # works on the image the seller picked, not on any uploaded file.
     base = _load(job_id, chosen["file"] if scratch else state["base_image"])
     size = gen_size(state.get("note", ""), config.FINAL_SIZE)
+
+    photos = state.get("photos") or []
+    extra_refs = ([_load(job_id, n) for n in photos[1:4]]
+                  if not scratch and len(photos) > 1 else None)
 
     # Where does the product mask come from?
     if scratch:
@@ -301,7 +312,7 @@ def finalise(job_id: str, draft_index: int, extra_instruction: str = "",
         prompt = f"{prompt}\n\nAdditional direction: {extra_instruction.strip()}"
 
     store.log(job_id, f"{config.FINAL_MODEL} editing at {size[0]}x{size[1]}, quality {config.FINAL_QUALITY}.")
-    edited = models.final_edit(base, prompt, mask_png, size)
+    edited = models.final_edit(base, prompt, mask_png, size, extra_refs=extra_refs)
     _save(job_id, edited, "final_raw.png")
 
     # Hard guarantee, not a hope: the product pixels come from the source.
@@ -333,6 +344,14 @@ def finalise(job_id: str, draft_index: int, extra_instruction: str = "",
         notes = [f"Refinement moved the image {stats['delta_e_mean']} dE2000 on "
                  f"average from the draft you approved. There is no source file "
                  f"to check fidelity against, so this is information, not a test."]
+    elif multi_ref:
+        # The output is a composition of several references, so comparing it
+        # against the first upload alone would flag exactly the changes that
+        # were asked for. The numbers stay; the verdict doesn't apply.
+        level = "info"
+        notes = ["Composed from several reference images, so there is no single "
+                 "source to measure against. Check the design against your "
+                 "reference by eye."]
     else:
         level, notes = imaging.verdict(stats)
     store.log(job_id, f"Model output: dE2000 mean {stats['delta_e_mean']}, "
