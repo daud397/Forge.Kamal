@@ -123,15 +123,17 @@ button:hover{background:#1fb4dd}
   <p>Enter the portal password.</p>
   <input type="password" name="password" autofocus autocomplete="current-password">
   <button type="submit">Enter</button>
+  <p style="margin-top:14px;font-size:11px;color:#837a6d">Build __BUILD__</p>
   __ERROR__
 </form>
 </body></html>"""
 
 
 def login_page(error: str = "") -> HTMLResponse:
+    import config
     html = LOGIN_PAGE.replace(
         "__ERROR__", f'<p class="err">{error}</p>' if error else ""
-    )
+    ).replace("__BUILD__", config.BUILD)
     return HTMLResponse(html, status_code=401 if error else 200)
 
 

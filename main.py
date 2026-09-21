@@ -11,6 +11,7 @@ import agent, auth, budget, config, models, pipeline, store
 from presets import PRESETS, SHOT_TEMPLATES
 
 app = FastAPI(title="Listing Forge")
+print(f"Kamal Forge build {config.BUILD} starting.", flush=True)
 pool = ThreadPoolExecutor(max_workers=int(os.getenv("WORKERS", "2")))
 store.init()
 budget.init()

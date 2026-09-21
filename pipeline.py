@@ -544,11 +544,12 @@ def _edit_freely(job_id: str, source: Image.Image, instruction: str) -> Image.Im
 
     prompt = (
         f"{instruction.strip()}\n\n"
-        "Keep the existing subject, its colour, material, proportions and "
-        "position exactly as they are. Match the lighting direction, colour "
-        "temperature and shadow behaviour already in the photograph so anything "
-        "added looks like it was there when the shot was taken. Photographic, "
-        "no text, no logos, no watermarks."
+        "The instruction above takes precedence: make exactly the change it "
+        "asks for. Everything it does not mention stays as it is - subject, "
+        "colours, materials, proportions, position. Match the lighting "
+        "direction, colour temperature and shadow behaviour already in the "
+        "photograph so any change looks like it was there when the shot was "
+        "taken. Photographic, no text, no logos, no watermarks."
     )
     return models.final_edit(source, prompt, None, config.FINAL_SIZE)
 

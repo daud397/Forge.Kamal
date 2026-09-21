@@ -346,7 +346,11 @@ def compose_prompt(scene: str, directive: str = "", brief: dict | None = None,
         parts.append("WHAT IS REQUIRED, in the seller's own words:\n"
                      + directive.strip())
 
-    if brief:
+    # With several references the sampled colours and pattern are a blend of
+    # all of them, and a transfer job needs the design read from one image, not
+    # an average. The images speak for themselves; the directive says which is
+    # which.
+    if brief and n_images <= 1:
         facts = []
         colours = brief.get("dominant_colours") or []
         if colours:
@@ -368,11 +372,19 @@ def compose_prompt(scene: str, directive: str = "", brief: dict | None = None,
     return "\n\n".join(parts)
 
 
+# Subordinated to the seller's requirement, never in competition with it. The
+# previous wording ordered the model to keep the product's surface pattern
+# "exactly as supplied" on every call - including calls whose entire purpose
+# was to change the pattern. The seller would ask for a design transfer and the
+# clause would forbid it two lines later; the model obeyed the clause and the
+# portal appeared to do nothing.
 PRESERVE_CLAUSE = (
-    "Change the background and lighting environment only. Do not alter the product: "
-    "keep its geometry, proportions, camera angle, surface pattern, finish and every "
-    "label exactly as supplied. No added text, no logos, no watermarks, no borders, "
-    "no duplicated objects, no props resting on or overlapping the product."
+    "The requirement stated at the top takes precedence over everything else in "
+    "this prompt. Follow it exactly. Whatever it does not ask to change, keep "
+    "exactly as supplied: geometry, proportions, camera angle, surface pattern, "
+    "finish, labels. If it asks only for a scene or background, do not alter the "
+    "product at all. Never add text, logos, watermarks or borders, never "
+    "duplicate objects, and never rest props on or over the product."
 )
 
 
