@@ -402,6 +402,53 @@ def finalise(job_id: str, draft_index: int, extra_instruction: str = "",
     return updated
 
 
+# --- Design transfer: several references, one good image ----------------------
+
+def transfer(job_id: str) -> dict:
+    """The mill's daily job, done the way ChatGPT does it: one prompt, one
+    final-quality image, every reference attached.
+
+    No draft round. Drafts run at low quality to be cheap, and low quality is
+    exactly what a fine motif cannot survive - so for a design-transfer job the
+    options looked wrong before anyone picked one, and the money was spent
+    proving it. One medium-quality image costs about the same as two low drafts
+    and is actually judgeable.
+    """
+    state = store.get(job_id)
+    photos = state.get("photos") or []
+    sources = [_load(job_id, n) for n in photos]
+    note = state.get("note", "")
+
+    size = gen_size(note, config.FINAL_SIZE)
+    store.update(job_id, stage="finalising")
+    store.log(job_id, f"{config.FINAL_MODEL} generating one image at "
+                      f"{size[0]}x{size[1]}, quality {config.FINAL_QUALITY}, with "
+                      f"all {len(sources)} references and detail preservation on.")
+
+    prompt = models.compose_prompt(
+        "Exactly as the requirement specifies.", note, None,
+        n_images=len(sources)) + "\n\n" + models.PRESERVE_CLAUSE
+
+    img = models.transfer_generate(sources, prompt, size)
+    _save(job_id, img, "final_composited.png")
+
+    updated = store.update(
+        job_id,
+        stage="finalised",
+        final_file="final_composited.png",
+        qa={"stats": {"delta_e_mean": 0.0, "delta_e_p95": 0.0, "delta_e_max": 0.0,
+                      "ssim_product": 1.0, "product_coverage": 1.0,
+                      "pixels_out_of_tolerance": 0},
+            "level": "info",
+            "notes": ["Composed from your reference images. Check the design "
+                      "against the reference by eye - especially motif size and "
+                      "the reverse-side colour."],
+            "review": {"usable": True, "issues": [], "fix_instruction": ""}},
+    )
+    _thumb(job_id)
+    return updated
+
+
 # --- Taking a draft as it stands ---------------------------------------------
 
 def use_as_is(job_id: str, draft_index: int) -> dict:
@@ -454,6 +501,9 @@ def redraft(job_id: str) -> dict:
     """
     state = store.get(job_id)
     if not (state.get("brief") or {}).get("scene_prompts"):
+        if len(state.get("photos") or []) > 1:
+            store.log(job_id, "Another take from the same references.")
+            return transfer(job_id)
         raise ValueError("This run has no brief to generate from.")
 
     store.log(job_id, "Generating another set from the same brief.")
@@ -781,11 +831,14 @@ def run_auto(job_id: str, uploads: list[tuple[str, bytes]], note: str):
         # prompts anyway. Skipping it saves a vision call and its wait on the
         # jobs this mill runs every day.
         if len(store.get(job_id).get("photos") or []) > 1:
-            store.log(job_id, "Several references and a clear instruction, so "
-                              "skipping the analysis step - your words drive "
-                              "this one directly.")
-        else:
-            analyse(job_id)
+            store.log(job_id, "Several references and a clear instruction: one "
+                              "final-quality image, your words driving it "
+                              "directly.")
+            store.update(job_id, intent="transfer")
+            transfer(job_id)
+            return
+
+        analyse(job_id)
         drafts(job_id)
     except Exception as exc:
         store.log(job_id, f"{type(exc).__name__}: {exc}", "error")

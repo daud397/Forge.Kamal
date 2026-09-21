@@ -429,7 +429,7 @@ def generate_drafts(source, prompts: list[str],
     dims = size_string(*size)
 
     def one(prompt):
-        result = client.images.edit(
+        result = _edit_with_fidelity(client, dict(
             model=config.DRAFT_MODEL,
             image=files,
             prompt=f"{compose_prompt(prompt, directive, brief, n_images=len(files))}"
@@ -437,10 +437,53 @@ def generate_drafts(source, prompts: list[str],
             size=dims,
             quality=config.DRAFT_QUALITY,
             output_format="png",
-        )
+        ))
         return prompt, _decode(result.data[0])
 
     return _in_parallel(one, prompts, config.DRAFT_MODEL)
+
+
+def transfer_generate(sources: list[Image.Image], prompt: str,
+                      size: tuple[int, int] = None) -> Image.Image:
+    """One image, final quality, from several references.
+
+    This is the shape of the mill's daily job - design from one image, target
+    from another - and it gets a single good result rather than a pair of cheap
+    previews, because at draft quality a fine motif cannot survive and the
+    options look wrong before anyone has picked one.
+    """
+    size = size or config.FINAL_SIZE
+    if not live():
+        return _mock_scene(sources[0], prompt, size, refine=True)
+
+    from imaging import size_string
+    client = _client()
+    budget.check_images(1)
+
+    kwargs = dict(
+        model=config.FINAL_MODEL,
+        image=_as_files(sources),
+        prompt=prompt,
+        size=size_string(*size),
+        quality=config.FINAL_QUALITY,
+        output_format="png",
+    )
+    result = _edit_with_fidelity(client, kwargs)
+    budget.record("image", config.FINAL_MODEL)
+    return _decode(result.data[0])
+
+
+def _edit_with_fidelity(client, kwargs):
+    """input_fidelity="high" tells the model to preserve fine detail from the
+    input images - motif linework, exact colours - which is the whole point of
+    a reference. Not every deployment accepts the parameter, so the call falls
+    back to a plain edit rather than failing the run."""
+    try:
+        return client.images.edit(**kwargs, input_fidelity="high")
+    except Exception as exc:
+        if "input_fidelity" not in str(exc):
+            raise
+        return client.images.edit(**kwargs)
 
 
 def final_edit(source, prompt: str, mask_png: bytes | None,
@@ -479,7 +522,7 @@ def final_edit(source, prompt: str, mask_png: bytes | None,
         kwargs["mask"] = ("mask.png", mask_png, "image/png")
 
     budget.check_images(1)
-    result = client.images.edit(**kwargs)
+    result = _edit_with_fidelity(client, kwargs)
     budget.record("image", config.FINAL_MODEL)
     return _decode(result.data[0])
 
