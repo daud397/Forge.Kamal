@@ -404,6 +404,34 @@ def finalise(job_id: str, draft_index: int, extra_instruction: str = "",
 
 # --- Design transfer: several references, one good image ----------------------
 
+def transfer_roles(note: str, n: int) -> tuple[int, int]:
+    """Which attachment is the design and which is the bed being produced.
+
+    The mill's daily wording is "apply FIRST image design on SECOND image bed":
+    design first, target second. The API works the other way round - the first
+    image in the call is the canvas being edited - so the roles have to be read
+    from the words and the images reordered, or the transfer runs backwards:
+    the design lands on the wrong picture, which is exactly the failure that
+    prompted this function.
+
+    Returns (design_index, target_index) into the attachment list.
+    """
+    import re
+    t = (note or "").lower()
+
+    # "second image design ... on(to) first" - the reverse of the usual
+    if re.search(r"second[^.]{0,40}design[^.]{0,80}(on|onto|to)[^.]{0,30}first", t):
+        return 1, 0
+    # the mill's standard: "first image design ... on second"
+    if re.search(r"first[^.]{0,40}(design|reference)[^.]{0,80}(on|onto|to|like)[^.]{0,30}second", t):
+        return 0, 1
+    # "use the first image as a reference and make the second like it"
+    if re.search(r"first[^.]{0,50}reference", t) or re.search(r"second[^.]{0,50}like", t):
+        return 0, 1
+    # Unstated: the mill convention is design first, target second.
+    return 0, min(1, n - 1)
+
+
 def transfer(job_id: str) -> dict:
     """The mill's daily job, done the way ChatGPT does it: one prompt, one
     final-quality image, every reference attached.
@@ -416,8 +444,20 @@ def transfer(job_id: str) -> dict:
     """
     state = store.get(job_id)
     photos = state.get("photos") or []
-    sources = [_load(job_id, n) for n in photos]
+    imgs = [_load(job_id, n) for n in photos]
     note = state.get("note", "")
+
+    design_i, target_i = transfer_roles(note, len(photos))
+
+    # The canvas goes first in the API call; the design reference follows.
+    # Anything beyond two attachments rides along after those.
+    rest = [im for k, im in enumerate(imgs) if k not in (design_i, target_i)]
+    sources = [imgs[target_i], imgs[design_i]] + rest
+
+    ordinal = ["first", "second", "third", "fourth", "fifth", "sixth"]
+    store.log(job_id, f"Read the roles from your words: the {ordinal[design_i]} "
+                      f"image you attached is the design, the {ordinal[target_i]} "
+                      "is the bed to produce.")
 
     size = gen_size(note, config.FINAL_SIZE)
     store.update(job_id, stage="finalising")
@@ -425,9 +465,20 @@ def transfer(job_id: str) -> dict:
                       f"{size[0]}x{size[1]}, quality {config.FINAL_QUALITY}, with "
                       f"all {len(sources)} references and detail preservation on.")
 
-    prompt = models.compose_prompt(
-        "Exactly as the requirement specifies.", note, None,
-        n_images=len(sources)) + "\n\n" + models.PRESERVE_CLAUSE
+    prompt = (
+        "WHAT IS REQUIRED, in the seller's own words:\n" + note.strip() + "\n\n"
+        "HOW THE ATTACHED IMAGES MAP TO THOSE WORDS:\n"
+        "Image 1 supplied here is the bed and room to produce - what the seller "
+        f"calls their '{ordinal[target_i]} image'. Keep its bed, room, camera "
+        "angle, styling and lighting.\n"
+        "Image 2 supplied here is the design reference - the seller's "
+        f"'{ordinal[design_i]} image'. Take ONLY the bedding design from it: the "
+        "exact colours, motif, motif size, pattern repeat and the reverse-side "
+        "design.\n"
+        "Dress the bed in image 1 entirely in image 2's bedding design. The "
+        "result is image 1's scene wearing image 2's design.\n\n"
+        + models.PRESERVE_CLAUSE
+    )
 
     img = models.transfer_generate(sources, prompt, size)
     _save(job_id, img, "final_composited.png")
