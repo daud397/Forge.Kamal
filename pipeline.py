@@ -232,6 +232,14 @@ def drafts(job_id: str) -> dict:
     prompts = [p["prompt"] for p in brief.get("scene_prompts", [])][:config.DRAFT_COUNT]
     labels = [p.get("label", f"Option {i+1}") for i, p in enumerate(brief.get("scene_prompts", []))]
 
+    # No brief happens by design on multi-reference jobs: the person's own
+    # instruction is the whole job, so the options differ by take, not by scene.
+    if not prompts and state.get("note", "").strip():
+        prompts = ["Follow the requirement precisely.",
+                   "Follow the requirement precisely, with a slightly different "
+                   "take on composition and lighting."][:max(1, config.DRAFT_COUNT)]
+        labels = ["Take one", "Take two"][:len(prompts)]
+
     if not prompts:
         raise ValueError("The brief contains no scene prompts to draft from.")
 
@@ -766,7 +774,18 @@ def run_auto(job_id: str, uploads: list[tuple[str, bytes]], note: str):
             return
 
         store.update(job_id, intent="scene")
-        analyse(job_id)
+
+        # A multi-reference job is fully specified by the person's instruction:
+        # "apply the first image's design to the second" leaves the analyst
+        # nothing to add, and its sampled facts are dropped from multi-image
+        # prompts anyway. Skipping it saves a vision call and its wait on the
+        # jobs this mill runs every day.
+        if len(store.get(job_id).get("photos") or []) > 1:
+            store.log(job_id, "Several references and a clear instruction, so "
+                              "skipping the analysis step - your words drive "
+                              "this one directly.")
+        else:
+            analyse(job_id)
         drafts(job_id)
     except Exception as exc:
         store.log(job_id, f"{type(exc).__name__}: {exc}", "error")
