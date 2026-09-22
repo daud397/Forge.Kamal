@@ -450,6 +450,29 @@ def transfer_roles(note: str, n: int) -> tuple[int, int]:
     return 0, min(1, n - 1)
 
 
+def infographic_clause(note: str) -> str:
+    """Layout instructions for a listing infographic.
+
+    Asking for "infographic text" on its own gets callout circles with nothing
+    written in them: the model knows the shape of the format but not what the
+    words are for. Spelling out the anatomy - magnified detail, leader line,
+    short label - is what makes the labels appear.
+    """
+    if not models.wants_text(note):
+        return ""
+    return (
+        "LAYOUT OF THE INFOGRAPHIC:\n"
+        "Keep the bed photograph as the full background of the frame. Place "
+        "three to five circular magnified insets around the bedding, each "
+        "joined by a thin leader line to the exact spot on the bedding it "
+        "magnifies. Every inset carries a short written label - four words or "
+        "fewer - naming the feature it shows. Labels sit outside the inset, "
+        "never across the motif, and every one of them contains real words. "
+        "Take the wording from the requirement above wherever it supplies any; "
+        "otherwise name what the inset visibly shows.\n\n"
+    )
+
+
 def transfer(job_id: str) -> dict:
     """The mill's daily job, done the way ChatGPT does it: one prompt, one
     final-quality image, every reference attached.
@@ -499,7 +522,8 @@ def transfer(job_id: str) -> dict:
         "design.\n"
         "Dress the bed in image 1 entirely in image 2's bedding design. The "
         "result is image 1's scene wearing image 2's design.\n\n"
-        + models.PRESERVE_CLAUSE
+        + infographic_clause(note)
+        + models.preserve_clause(note)
     )
 
     img = models.transfer_generate(sources, prompt, size)

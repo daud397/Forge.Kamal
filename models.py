@@ -12,6 +12,7 @@ import io
 import json
 import os
 import random
+import re
 
 import numpy as np
 from PIL import Image, ImageDraw, ImageFilter
@@ -387,6 +388,48 @@ PRESERVE_CLAUSE = (
     "duplicate objects, and never rest props on or over the product."
 )
 
+# The same clause without the text ban. An infographic listing image is mostly
+# text - callout labels around a magnified detail - and the blanket "never add
+# text" forbade exactly what was asked for. The model obeyed the ban: it drew
+# the callout circles and the leader lines and left every label empty.
+PRESERVE_CLAUSE_WITH_TEXT = (
+    "The requirement stated at the top takes precedence over everything else in "
+    "this prompt. Follow it exactly. Whatever it does not ask to change, keep "
+    "exactly as supplied: geometry, proportions, camera angle, surface pattern, "
+    "finish. Never duplicate objects and never rest props on or over the "
+    "product.\n"
+    "This requirement DOES ask for written text, so text is required, not "
+    "forbidden. Every callout, badge or panel must carry real, legible words - "
+    "an empty circle or a blank label is a failure. Set the text in a clean "
+    "sans-serif, in English, correctly spelled, large enough to read on a phone "
+    "thumbnail, in a colour that holds contrast against what sits behind it. "
+    "Keep each label to four words or fewer. Add no brand name, no logo, no "
+    "watermark and no price. State only what is visible in the photograph - "
+    "pattern, colour, reversible design, closure, pillowcases included, finish. "
+    "Do not state fibre content, thread count, care instructions, sizes or any "
+    "other claim that cannot be seen, unless the requirement above supplies "
+    "those words itself."
+)
+
+TEXT_WORDS = ("infographic", "info graphic", "callout", "call-out", "call out",
+              "annotate", "annotation", "label", "labelled", "labeled",
+              "caption", "text overlay", "add text", "with text", "badge",
+              "feature list", "bullet", "写", "wording", "headline", "title text")
+
+
+def wants_text(note: str) -> bool:
+    """Did the seller ask for words to appear in the image?"""
+    t = (note or "").lower()
+    if any(w in t for w in TEXT_WORDS):
+        return True
+    # Any wording they put in quotes is text they expect to see rendered.
+    return bool(re.search(r"[\"\u201c\u2018\'][^\"\u201d\u2019\']{2,60}[\"\u201d\u2019\']", t)
+                and "text" in t)
+
+
+def preserve_clause(note: str = "") -> str:
+    return PRESERVE_CLAUSE_WITH_TEXT if wants_text(note) else PRESERVE_CLAUSE
+
 
 def _in_parallel(fn, prompts: list[str], model: str):
     """Run the image calls together and keep the requested order.
@@ -433,7 +476,7 @@ def generate_drafts(source, prompts: list[str],
             model=config.DRAFT_MODEL,
             image=files,
             prompt=f"{compose_prompt(prompt, directive, brief, n_images=len(files))}"
-                   f"\n\n{PRESERVE_CLAUSE}",
+                   f"\n\n{preserve_clause(directive)}",
             size=dims,
             quality=config.DRAFT_QUALITY,
             output_format="png",
@@ -513,7 +556,7 @@ def final_edit(source, prompt: str, mask_png: bytes | None,
     kwargs = dict(
         model=config.FINAL_MODEL,
         image=files,
-        prompt=f"{prompt}\n\n{PRESERVE_CLAUSE}",
+        prompt=f"{prompt}\n\n{preserve_clause(prompt)}",
         size=size_string(*size),
         quality=config.FINAL_QUALITY,
         output_format="png",
