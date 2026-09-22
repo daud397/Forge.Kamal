@@ -5,6 +5,8 @@ browser can poll and the tab can be closed without losing the run.
 """
 from __future__ import annotations
 
+import re
+import shutil
 import time
 import traceback
 import zipfile
@@ -68,9 +70,11 @@ def ingest(job_id: str, uploads: list[tuple[str, bytes]], note: str = "") -> dic
     store.update(job_id, stage="ingesting")
 
     cad_files, photos = [], []
-    for filename, blob in uploads:
+    for i, (filename, blob) in enumerate(uploads):
         suffix = Path(filename).suffix.lower()
-        dest = d / f"src_{Path(filename).name}"
+        # The index prefix matters: two attachments called "image.png" used to
+        # overwrite each other, leaving one photo where the seller sent two.
+        dest = d / f"src_{i + 1}_{Path(filename).name}"
         dest.write_bytes(blob)
         if suffix in config.CAD_EXTS:
             cad_files.append(dest)
@@ -108,6 +112,14 @@ def ingest(job_id: str, uploads: list[tuple[str, bytes]], note: str = "") -> dic
         name = f"photo_{path.stem}.png"
         img.save(d / name)
         photo_names.append(name)
+
+    if len(photo_names) > 1:
+        ordinal = ["first", "second", "third", "fourth", "fifth", "sixth"]
+        listing = ", ".join(
+            f"{ordinal[i] if i < len(ordinal) else str(i + 1)} image = {n}"
+            for i, n in enumerate(photo_names))
+        store.log(job_id, "Attachment order recorded exactly as you sent it: "
+                          + listing + ".")
 
     # The hero render is the best base: it carries an exact alpha matte.
     if "hero" in renders:
@@ -416,7 +428,6 @@ def transfer_roles(note: str, n: int) -> tuple[int, int]:
 
     Returns (design_index, target_index) into the attachment list.
     """
-    import re
     t = (note or "").lower()
 
     # "second image design ... on(to) first" - the reverse of the usual
@@ -428,6 +439,13 @@ def transfer_roles(note: str, n: int) -> tuple[int, int]:
     # "use the first image as a reference and make the second like it"
     if re.search(r"first[^.]{0,50}reference", t) or re.search(r"second[^.]{0,50}like", t):
         return 0, 1
+    # The mill's shorthand names only the target: "apply this design on the
+    # second image bed". Whatever is named as the thing being dressed is the
+    # target; the other attachment is the design.
+    if re.search(r"\b(on|onto|to|in|into)\b[^.]{0,25}\bsecond\b", t):
+        return 0, min(1, n - 1)
+    if re.search(r"\b(on|onto|to|in|into)\b[^.]{0,25}\bfirst\b", t):
+        return min(1, n - 1), 0
     # Unstated: the mill convention is design first, target second.
     return 0, min(1, n - 1)
 
@@ -447,7 +465,11 @@ def transfer(job_id: str) -> dict:
     imgs = [_load(job_id, n) for n in photos]
     note = state.get("note", "")
 
-    design_i, target_i = transfer_roles(note, len(photos))
+    override = state.get("roles") or {}
+    if "design" in override and "target" in override:
+        design_i, target_i = int(override["design"]), int(override["target"])
+    else:
+        design_i, target_i = transfer_roles(note, len(photos))
 
     # The canvas goes first in the API call; the design reference follows.
     # Anything beyond two attachments rides along after those.
@@ -848,6 +870,75 @@ def intent_of(note: str) -> str:
     return "scene"
 
 
+# --- Follow-ups: "do the same with this one" ---------------------------------
+#
+# The seller writes one full instruction, then sends the next design with three
+# words. ChatGPT carries the instruction forward; Forge used to treat those
+# three words as the whole brief and invent a scene. So: recognise a
+# back-reference, reuse the last real instruction, and carry the bed from that
+# run forward as the target so the new attachment has something to be applied to.
+
+BACKREF = re.compile(
+    r"^\W*(now\s+)?(please\s+)?(do|make|try|apply|repeat)?\s*"
+    r"(the\s+)?(same|this|it)\b[^.]{0,40}$", re.I)
+BACKREF_WORDS = ("same as above", "same as before", "same thing", "do the same",
+                 "with this one", "with this image", "repeat", "as previous",
+                 "like before", "like the last one", "same prompt")
+
+
+def is_backref(note: str) -> bool:
+    t = (note or "").strip().lower()
+    if not t or len(t) > 120:
+        return False
+    if any(w in t for w in BACKREF_WORDS):
+        return True
+    return bool(BACKREF.match(t))
+
+
+def carry_target(job_id: str, prior: dict) -> None:
+    """Bring the bed from the previous run forward as this run's target.
+
+    The seller sends one new design and says "do the same". The design needs a
+    bed to land on, and the bed they mean is the one from last time. It is
+    copied in as a second attachment, and the roles are pinned explicitly so
+    nothing has to be guessed from the reused wording: the new upload is the
+    design, the carried bed is the target.
+    """
+    photos = store.get(job_id).get("photos") or []
+    if len(photos) != 1:
+        return                      # they attached both themselves; leave it alone
+
+    prior_photos = prior.get("photos") or []
+    if not prior_photos:
+        return
+    _, prior_target = transfer_roles(prior.get("note", ""), len(prior_photos))
+    src = job_dir(prior["id"]) / prior_photos[prior_target]
+    if not src.exists():
+        return
+
+    name = "photo_carried_target.png"
+    shutil.copyfile(src, job_dir(job_id) / name)
+    store.update(job_id, photos=photos + [name],
+                 roles={"design": 0, "target": 1})
+    store.log(job_id, "The bed from that run is carried in as the second image, "
+                      "so your new attachment is the design and that bed is what "
+                      "it gets applied to.")
+
+
+def previous_run() -> dict | None:
+    """The most recent finished job that carried a real instruction."""
+    for row in store.recent(limit=25):
+        state = store.get(row["id"])
+        if not state:
+            continue
+        if not (state.get("photos") or []):
+            continue
+        prior = (state.get("note") or "").strip()
+        if prior and not is_backref(prior):
+            return state
+    return None
+
+
 # --- Runner ------------------------------------------------------------------
 
 def run_auto(job_id: str, uploads: list[tuple[str, bytes]], note: str):
@@ -857,7 +948,37 @@ def run_auto(job_id: str, uploads: list[tuple[str, bytes]], note: str):
     fewer model calls and no waiting on options that were never wanted.
     """
     try:
+        follow_on = None
+        if is_backref(note):
+            follow_on = previous_run()
+            if follow_on:
+                store.log(job_id, "Read as a follow-up to your last run, so the "
+                                  "instruction from that run is reused word for "
+                                  "word with this new attachment.")
+                note = (follow_on.get("note") or "").strip()
+
         ingest(job_id, uploads, note)
+
+        if follow_on:
+            carry_target(job_id, follow_on)
+
+        photos = store.get(job_id).get("photos") or []
+
+        # Two or more photographs means the seller is talking about "the first
+        # image" and "the second image", and only transfer() understands that.
+        # This decision comes first: the keyword router below reads one sentence
+        # and one photo, so a two-image job that happened to contain the word
+        # "change" or "quality" used to be routed to a single-image edit or an
+        # upscale, silently dropping image 2. That was the whole bug.
+        if len(photos) > 1:
+            store.log(job_id, f"{len(photos)} images attached, so this is a "
+                              "design transfer, not a scene: one final-quality "
+                              "image, your words and your attachment order "
+                              "driving it.")
+            store.update(job_id, intent="transfer")
+            transfer(job_id)
+            return
+
         kind = intent_of(note)
 
         if kind == "upscale":
@@ -875,20 +996,6 @@ def run_auto(job_id: str, uploads: list[tuple[str, bytes]], note: str):
             return
 
         store.update(job_id, intent="scene")
-
-        # A multi-reference job is fully specified by the person's instruction:
-        # "apply the first image's design to the second" leaves the analyst
-        # nothing to add, and its sampled facts are dropped from multi-image
-        # prompts anyway. Skipping it saves a vision call and its wait on the
-        # jobs this mill runs every day.
-        if len(store.get(job_id).get("photos") or []) > 1:
-            store.log(job_id, "Several references and a clear instruction: one "
-                              "final-quality image, your words driving it "
-                              "directly.")
-            store.update(job_id, intent="transfer")
-            transfer(job_id)
-            return
-
         analyse(job_id)
         drafts(job_id)
     except Exception as exc:

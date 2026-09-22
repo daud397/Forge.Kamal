@@ -326,3 +326,30 @@ button{font:inherit;cursor:pointer}
 .chips-label{margin:16px 0 8px;font-size:12px;color:var(--faint)}
 .intro .chips{margin-bottom:4px}
 .nudge{border-color:var(--indigo);color:var(--indigo)}
+
+/* Numbered attachment chips. The number is the contract: attachment 1 is the
+   seller's "first image", attachment 2 the "second". */
+.attach-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  margin: 0 6px 4px 0;
+  padding: 3px 6px 3px 8px;
+  border: 1px solid var(--line, #d8d4cd);
+  border-radius: 999px;
+  font-size: 12px;
+  line-height: 1.4;
+  background: var(--card, #fff);
+}
+.attach-chip b { font-weight: 600; opacity: .55; }
+.attach-x {
+  border: 0;
+  background: none;
+  cursor: pointer;
+  font-size: 15px;
+  line-height: 1;
+  padding: 0 2px;
+  opacity: .45;
+}
+.attach-x:hover { opacity: 1; }
+.attach-hint { opacity: .6; font-size: 12px; }

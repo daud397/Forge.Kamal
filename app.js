@@ -81,7 +81,7 @@ function startFresh() {
   clearInterval(poll);
   lastRender = "";
   $("files").value = "";
-  $("attached").hidden = true;
+  renderAttached();
   $("threadtitle").textContent = "Kamal Forge";
   $("fileunder").hidden = true;
   $("thread").innerHTML = "";
@@ -122,12 +122,55 @@ function introBlock() {
 // ---------------------------------------------------------------- sending
 
 function showAttached() {
-  attached = [...$("files").files];
+  // Each trip to the picker ADDS to the list. It used to replace it, so a
+  // seller who attached the design, then came back for the bed, sent one
+  // image and got scene drafts instead of a transfer. Attachment order is the
+  // contract - "first image" means the first one in this list, always - so the
+  // list is numbered on screen and nothing is ever silently dropped.
+  const picked = [...$("files").files];
+  for (const f of picked) {
+    const already = attached.some(
+      g => g.name === f.name && g.size === f.size && g.lastModified === f.lastModified);
+    if (!already) attached.push(f);
+  }
+  // Clearing the input lets the same file be picked again after removal.
+  $("files").value = "";
+  renderAttached();
+}
+
+function renderAttached() {
   const note = $("attached");
+  note.textContent = "";
   if (!attached.length) { note.hidden = true; return; }
   note.hidden = false;
-  note.textContent = attached.map(f => f.name).join(", ") +
-    " — pick a standard shot or describe the change, then send.";
+
+  attached.forEach((f, i) => {
+    const chip = document.createElement("span");
+    chip.className = "attach-chip";
+
+    const n = document.createElement("b");
+    n.textContent = (i + 1) + ".";
+    chip.appendChild(n);
+    chip.appendChild(document.createTextNode(" " + f.name + " "));
+
+    const x = document.createElement("button");
+    x.type = "button";
+    x.className = "attach-x";
+    x.textContent = "\u00d7";
+    x.title = "Remove";
+    x.onclick = () => { attached.splice(i, 1); renderAttached(); };
+    chip.appendChild(x);
+
+    note.appendChild(chip);
+  });
+
+  const hint = document.createElement("span");
+  hint.className = "attach-hint";
+  hint.textContent = attached.length > 1
+    ? "Image 1 is your \u201cfirst image\u201d, image 2 your \u201csecond image\u201d. Attach more with +, then send."
+    : "Attach the second image with + \u2014 or describe the change and send.";
+  note.appendChild(hint);
+
   $("attach").classList.remove("nudge");
 }
 
@@ -176,7 +219,7 @@ async function startFromFiles(note) {
 
   attached = [];
   $("files").value = "";
-  $("attached").hidden = true;
+  renderAttached();
   pend.remove();
 
   jobId = (await res.json()).job_id;
