@@ -250,12 +250,21 @@ def chat(job_id: str, message: str = Form(...)):
 
 
 @app.get("/api/jobs/{job_id}/file/{name}")
-def job_file(job_id: str, name: str):
+def job_file(job_id: str, name: str, full: int = 0):
     if "/" in name or "\\" in name or ".." in name:
         raise HTTPException(400, "Bad filename.")
     path = pipeline.job_dir(job_id) / name
     if not path.exists():
         raise HTTPException(404, "No such file.")
+
+    # full=1 is what the download button asks for. The image on screen is the
+    # generator's own output; a listing wants a bigger file than that, and if
+    # we do not enlarge it here the marketplace or the browser will, worse.
+    if full:
+        try:
+            return FileResponse(pipeline.delivery_copy(job_id, name))
+        except Exception:
+            pass                       # a bad enlarge should never block a download
     return FileResponse(path)
 
 

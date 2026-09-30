@@ -13,14 +13,15 @@ import zipfile
 from pathlib import Path
 
 import numpy as np
-from PIL import Image
+from PIL import Image, ImageFilter
 
 import cad, config, imaging, models, store
 from presets import preset
 
 
 # Long edge cap for uploaded photographs.
-PHOTO_MAX_EDGE = 2048
+# Kept in config so it can be tuned without a deploy.
+PHOTO_MAX_EDGE = config.PHOTO_MAX_EDGE
 
 
 def job_dir(job_id: str) -> Path:
@@ -110,7 +111,7 @@ def ingest(job_id: str, uploads: list[tuple[str, bytes]], note: str = "") -> dic
                               f"to {img.width}x{img.height}.")
 
         name = f"photo_{path.stem}.png"
-        img.save(d / name)
+        img.save(d / name, "PNG", optimize=False)
         photo_names.append(name)
 
     if len(photo_names) > 1:
@@ -224,6 +225,33 @@ def drafts_for_mode(job_id: str) -> dict:
     """Regenerate using whichever path this job started on."""
     state = store.get(job_id)
     return drafts_scratch(job_id) if state.get("mode") == "scratch" else drafts(job_id)
+
+
+def delivery_copy(job_id: str, name: str) -> Path:
+    """A print-and-listing sized copy of a finished image, made once and kept.
+
+    The generator tops out at config.FINAL_SIZE. Enlarging past that adds no
+    detail that was not generated, so this is honest Lanczos plus a light
+    unsharp mask to undo the softening the enlargement itself causes - not a
+    second generative pass, which would quietly redraw the motif.
+    """
+    d = job_dir(job_id)
+    src_path = d / name
+    out_path = d / f"delivery_{Path(name).stem}.png"
+    if out_path.exists() and out_path.stat().st_mtime >= src_path.stat().st_mtime:
+        return out_path
+
+    img = Image.open(src_path).convert("RGB")
+    edge = config.DELIVER_EDGE
+    if max(img.size) < edge:
+        k = edge / max(img.size)
+        img = img.resize((round(img.width * k), round(img.height * k)),
+                         Image.LANCZOS)
+        img = img.filter(ImageFilter.UnsharpMask(radius=1.6, percent=55,
+                                                 threshold=3))
+
+    img.save(out_path, "PNG", optimize=False)
+    return out_path
 
 
 def gen_size(note: str, default: tuple[int, int]) -> tuple[int, int]:
@@ -837,7 +865,8 @@ def export(job_id: str, preset_names: list[str]) -> dict:
         filename = f"export_{name}.{ext}"
 
         if fmt == "JPEG":
-            out.convert("RGB").save(d / filename, "JPEG", quality=92, subsampling=1)
+            out.convert("RGB").save(d / filename, "JPEG", quality=95,
+                                    subsampling=0, optimize=True)
         elif fmt == "WEBP":
             out.save(d / filename, "WEBP", quality=92, method=5)
         else:

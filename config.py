@@ -17,7 +17,7 @@ for d in (UPLOADS, RENDERS, DRAFTS, FINALS, EXPORTS):
 # Bump this whenever the code changes. /api/status reports it, so there is a
 # way to confirm which build is actually running rather than inferring it from
 # behaviour - which has already cost us a debugging session once.
-BUILD = "2026-09-22b"
+BUILD = "2026-09-22c"
 
 # --- Models -----------------------------------------------------------------
 REASONING_MODEL = os.getenv("REASONING_MODEL", "gpt-6-astra")
@@ -52,7 +52,23 @@ EXPERIMENTAL_PIXELS = 3_686_400  # 2560x1440; above this OpenAI marks output exp
 # Generation happens below the experimental threshold, then Lanczos carries it
 # the rest of the way. Cheaper and more predictable than generating at 4K.
 DRAFT_SIZE = (1024, 1024)
-FINAL_SIZE = (1536, 1536)
+
+# Finals generate at the largest size OpenAI does not mark experimental:
+# 1920x1920 is 3,686,400 pixels, exactly the threshold, and a multiple of 16.
+# 1536 was leaving a third of the available detail on the table on every run.
+_FINAL_EDGE = int(os.getenv("FINAL_EDGE", "1920"))
+FINAL_SIZE = (_FINAL_EDGE, _FINAL_EDGE)
+
+# What a download actually delivers. The generator's ceiling is FINAL_EDGE, so
+# the rest is Lanczos with a light sharpen - it does not invent detail, it
+# delivers a file big enough for a marketplace listing without the browser
+# resampling it later. Amazon wants 1600px minimum and rewards 3000px.
+DELIVER_EDGE = int(os.getenv("DELIVER_EDGE", "3000"))
+
+# How much of an uploaded reference is kept. Every pixel thrown away here is
+# motif detail the transfer can never recover, and 2048 was throwing away most
+# of a modern phone photo.
+PHOTO_MAX_EDGE = int(os.getenv("PHOTO_MAX_EDGE", "3072"))
 
 # --- CAD rendering ----------------------------------------------------------
 RENDER_SIZE = int(os.getenv("RENDER_SIZE", "1024"))

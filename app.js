@@ -445,7 +445,7 @@ function finalCard(state) {
 
   (state.exports || []).forEach(e => {
     const a = document.createElement("a");
-    a.href = `/api/jobs/${jobId}/file/${e.file}`;
+    a.href = `/api/jobs/${jobId}/file/${e.file}?full=1`;
     a.download = "";
     a.textContent = "↓ " + e.label;
     if (!e.generative_allowed) {
@@ -538,7 +538,7 @@ let lbUse = null, lbAsIs = null;
 function zoom(src, opts = {}) {
   $("lbimg").src = src;
   $("lblabel").textContent = opts.label || "";
-  $("lbdownload").href = src;
+  $("lbdownload").href = src + (src.includes("?") ? "&" : "?") + "full=1";
   $("lbdownload").download = (opts.label || "image").replace(/[^a-z0-9]+/gi, "-").toLowerCase() + ".png";
 
   lbUse = opts.use || null;
