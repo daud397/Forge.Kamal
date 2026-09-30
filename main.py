@@ -4,6 +4,8 @@ from __future__ import annotations
 import os
 from concurrent.futures import ThreadPoolExecutor
 
+import uuid
+
 from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
 
@@ -96,7 +98,8 @@ def status():
 
 
 @app.post("/api/jobs")
-async def create_job(files: list[UploadFile] = File(...), note: str = Form("")):
+async def create_job(files: list[UploadFile] = File(...), note: str = Form(""),
+                     thread: str = Form("")):
     uploads = []
     for f in files:
         blob = await f.read()
@@ -107,9 +110,14 @@ async def create_job(files: list[UploadFile] = File(...), note: str = Form("")):
     if not uploads:
         raise HTTPException(400, "No files received.")
 
-    job_id = store.create({"created_at": None})
+    # A thread is the chat the seller is in. Without one, every upload was an
+    # island: "do the same with this one" had nothing to point at, and a
+    # follow-up could pick up a stranger's last run instead of their own.
+    thread = (thread or "").strip() or uuid.uuid4().hex[:12]
+
+    job_id = store.create({"created_at": None, "thread": thread})
     pool.submit(pipeline.run_auto, job_id, uploads, note)
-    return {"job_id": job_id}
+    return {"job_id": job_id, "thread": thread}
 
 
 @app.post("/api/jobs/describe")
@@ -119,7 +127,8 @@ def describe_job(description: str = Form(...)):
     if len(text) < 3:
         raise HTTPException(400, "Describe the product in a few words.")
 
-    job_id = store.create({"created_at": None, "mode": "scratch"})
+    job_id = store.create({"created_at": None, "mode": "scratch",
+                           "thread": uuid.uuid4().hex[:12]})
     pool.submit(pipeline.run_describe, job_id, text)
     return {"job_id": job_id}
 
@@ -127,6 +136,22 @@ def describe_job(description: str = Form(...)):
 @app.get("/api/jobs")
 def list_jobs(project: str | None = None):
     return {"jobs": store.recent(project=project)}
+
+
+@app.post("/api/jobs/{job_id}/rating")
+def set_verdict(job_id: str, rating: str = Form(...)):
+    """Was this one usable? The only signal Forge has ever had is spend.
+
+    Recording it does two things: the thread prefers an accepted run when it
+    carries context forward, and over time these become the examples worth
+    reusing rather than everyone re-deriving the same prompt.
+    """
+    if not store.get(job_id):
+        raise HTTPException(404, "No such job.")
+    if rating not in ("good", "bad", ""):
+        raise HTTPException(400, "Rating must be good, bad or empty.")
+    store.update(job_id, rating=rating or None)
+    return {"ok": True, "rating": rating}
 
 
 @app.get("/api/projects")
@@ -204,7 +229,8 @@ def rerun(job_id: str):
     if not old:
         raise HTTPException(404, "No such run.")
 
-    new_id = store.create({"created_at": None, "mode": old.get("mode", "edit")})
+    new_id = store.create({"created_at": None, "mode": old.get("mode", "edit"),
+                           "thread": old.get("thread") or job_id})
     pool.submit(pipeline.run_rerun, job_id, new_id)
     return {"job_id": new_id}
 

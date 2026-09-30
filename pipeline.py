@@ -978,18 +978,32 @@ def carry_target(job_id: str, prior: dict) -> None:
                       "it gets applied to.")
 
 
-def previous_run() -> dict | None:
-    """The most recent finished job that carried a real instruction."""
-    for row in store.recent(limit=25):
-        state = store.get(row["id"])
-        if not state:
+def previous_run(thread: str = "", exclude: str = "") -> dict | None:
+    """The run this follow-up is following on from.
+
+    Scoped to the seller's own thread. Scanning every job on the server meant
+    "do the same with this one" could reach into an unrelated run - a real
+    hazard once two people use the portal on the same afternoon. A run they
+    marked good wins over a more recent one they said nothing about: if they
+    told us which output was right, that is the one to build on.
+    """
+    candidates = []
+    for row in store.recent(limit=40):
+        if row["id"] == exclude:
             continue
-        if not (state.get("photos") or []):
+        if thread and (row.get("thread") or "") != thread:
+            continue
+        state = store.get(row["id"])
+        if not state or not (state.get("photos") or []):
             continue
         prior = (state.get("note") or "").strip()
         if prior and not is_backref(prior):
-            return state
-    return None
+            candidates.append(state)
+
+    if not candidates:
+        return None
+    good = [c for c in candidates if c.get("rating") == "good"]
+    return (good or candidates)[0]
 
 
 # --- Runner ------------------------------------------------------------------
@@ -1003,7 +1017,9 @@ def run_auto(job_id: str, uploads: list[tuple[str, bytes]], note: str):
     try:
         follow_on = None
         if is_backref(note):
-            follow_on = previous_run()
+            follow_on = previous_run(
+                thread=(store.get(job_id) or {}).get("thread") or "",
+                exclude=job_id)
             if follow_on:
                 store.log(job_id, "Read as a follow-up to your last run, so the "
                                   "instruction from that run is reused word for "

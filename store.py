@@ -6,6 +6,7 @@ mid-render, which an in-memory dict does not.
 from __future__ import annotations
 
 import json
+import re
 import sqlite3
 import threading
 import time
@@ -76,6 +77,40 @@ def log(job_id: str, message: str, level: str = "info"):
                   (time.time(), json.dumps(state), job_id))
 
 
+# The sidebar used to show the first sixty characters of the instruction, so
+# every row read "Would you please apply Whole Blue Steel duvet…" and nothing
+# could be told apart. A title is the subject of the sentence, not its opening.
+BOILERPLATE = (
+    "would you please", "could you please", "please", "i attached", "i have attached",
+    "can you", "kindly", "i want you to", "i need you to", "make sure",
+    "apply as it is", "as it is", "use this image as a reference",
+)
+
+
+def short_title(state: dict) -> str:
+    brief = state.get("brief") or {}
+    if brief.get("product_name"):
+        return brief["product_name"][:48]
+
+    t = " ".join((state.get("note") or "").split())
+    low = t.lower()
+    for phrase in BOILERPLATE:
+        while low.startswith(phrase):
+            t = t[len(phrase):].lstrip(" ,.:-")
+            low = t.lower()
+
+    # A filename in the instruction is the most recognisable thing in it, and
+    # the mill's filenames carry spaces: "Witches Brew (Bed) YELLOW.jpg".
+    m = re.search(r"([\w][\w()'&\- ]{1,40})\.(?:jpe?g|png|webp|tiff?)\b", t, re.I)
+    if m:
+        stem = m.group(1).strip(" ,.-")
+        if len(stem) > 2:
+            return stem[:48]
+
+    words = t.split()
+    return " ".join(words[:7])[:48] or "Untitled run"
+
+
 def recent(limit: int = 60, project: str | None = None) -> list[dict]:
     with _lock, _conn() as c:
         rows = c.execute(
@@ -90,6 +125,10 @@ def recent(limit: int = 60, project: str | None = None) -> list[dict]:
             continue
         out.append({
             "id": s["id"],
+            "thread": s.get("thread") or s["id"],
+            "title": short_title(s),
+            "rating": s.get("rating"),
+            "error": s.get("error"),
             "stage": s.get("stage"),
             "mode": s.get("mode", "edit"),
             "project": s.get("project") or "",

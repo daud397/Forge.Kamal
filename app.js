@@ -4,6 +4,7 @@ let config = null;
 let jobId = null;
 let poll = null;
 let attached = [];
+let threadId = "";   // the chat this run belongs to
 let busy = false;
 let lastRender = "";      // so polling doesn't rebuild an identical thread
 
@@ -77,6 +78,7 @@ function wire() {
 
 function startFresh() {
   jobId = null;
+  threadId = "";
   attached = [];
   clearInterval(poll);
   lastRender = "";
@@ -212,6 +214,7 @@ async function startFromFiles(note) {
   const body = new FormData();
   attached.forEach(f => body.append("files", f));
   body.append("note", note);
+  body.append("thread", threadId);
 
   const pend = say("bot", "Reading the file…", true);
   const res = await fetch("/api/jobs", { method: "POST", body });
@@ -222,7 +225,9 @@ async function startFromFiles(note) {
   renderAttached();
   pend.remove();
 
-  jobId = (await res.json()).job_id;
+  const started = await res.json();
+  jobId = started.job_id;
+  threadId = started.thread || threadId;
   lastRender = "";
   watch();
 }
@@ -236,7 +241,9 @@ async function startFromDescription(text) {
   if (!res.ok) throw new Error(await res.text());
 
   pend.remove();
-  jobId = (await res.json()).job_id;
+  const started = await res.json();
+  jobId = started.job_id;
+  threadId = started.thread || threadId;
   lastRender = "";
   watch();
 }
@@ -434,8 +441,66 @@ function finalCard(state) {
     card.appendChild(v);
   }
 
+  // What went in, beside what came out. Judging a transfer without the
+  // reference in the same view means opening two tabs and guessing, which is
+  // how a wrong motif reaches a listing.
+  const ins = (state.photos || []);
+  if (ins.length > 1) {
+    const strip = document.createElement("div");
+    strip.className = "inputs";
+    const roles = state.roles || {};
+    ins.forEach((file, i) => {
+      const role = roles.design === i ? "design"
+                 : roles.target === i ? "bed"
+                 : (i === 0 ? "design" : i === 1 ? "bed" : "");
+      const fig = document.createElement("button");
+      fig.className = "input-thumb";
+      fig.title = "Open " + file;
+      fig.innerHTML = `<img src="/api/jobs/${jobId}/file/${file}" alt="">
+        <span>${i + 1}${role ? " · " + role : ""}</span>`;
+      fig.onclick = () => zoom(`/api/jobs/${jobId}/file/${file}`,
+                               { label: `input ${i + 1}` });
+      strip.appendChild(fig);
+    });
+    const cap = document.createElement("p");
+    cap.className = "inputs-cap";
+    cap.textContent = "What you sent in — click to compare against the result above.";
+    card.appendChild(cap);
+    card.appendChild(strip);
+  }
+
+  // Was it usable? One click, and the thread builds on the accepted one.
+  const rate = document.createElement("div");
+  rate.className = "rating";
+  const rlabel = document.createElement("span");
+  rlabel.textContent = "Usable for a listing?";
+  rate.appendChild(rlabel);
+  [["good", "Yes"], ["bad", "No"]].forEach(([value, text]) => {
+    const b = document.createElement("button");
+    b.className = "rate" + (state.rating === value ? " on" : "");
+    b.textContent = text;
+    b.onclick = async () => {
+      const body = new FormData();
+      body.append("rating", state.rating === value ? "" : value);
+      await fetch(`/api/jobs/${jobId}/rating`, { method: "POST", body });
+      lastRender = "";
+      watch();
+      loadJobs();
+    };
+    rate.appendChild(b);
+  });
+  card.appendChild(rate);
+
   const acts = document.createElement("div");
   acts.className = "actions";
+
+  const dl = document.createElement("a");
+  dl.className = "act primary";
+  dl.href = `/api/jobs/${jobId}/file/${state.final_file}?full=1`;
+  dl.download = "";
+  dl.textContent = "↓ Download full size";
+  dl.title = "Delivered at 3000px for marketplace listings";
+  acts.appendChild(dl);
 
   add(acts, "Another set of options", moreOptions);
   add(acts, "Edit image", () =>
@@ -551,6 +616,17 @@ function zoom(src, opts = {}) {
 
 // ---------------------------------------------------------------- sidebar
 
+function shortError(raw) {
+  const t = (raw || "").toLowerCase();
+  if (!t) return "no reason recorded";
+  if (t.includes("nothing usable")) return "no usable image in the upload";
+  if (t.includes("cap") || t.includes("budget")) return "daily spend cap";
+  if (t.includes("timeout") || t.includes("timed out")) return "the model timed out";
+  if (t.includes("safety") || t.includes("policy")) return "the model refused it";
+  if (t.includes("cad") || t.includes("libgl")) return "that 3D format is unsupported";
+  return (raw || "").split(":")[0].slice(0, 40);
+}
+
 async function loadJobs() {
   const url = projectFilter === null
     ? "/api/jobs"
@@ -568,12 +644,15 @@ async function loadJobs() {
       ? `<img class="run-thumb" src="/api/jobs/${j.id}/file/${j.thumb}" alt="">`
       : `<span class="run-thumb blank">${j.stage === "failed" ? "—" : "…"}</span>`;
     const meta = j.stage === "failed"
-      ? `<span class="bad">failed</span>`
+      ? `<span class="bad" title="${esc(j.error || "")}">failed — ${esc(shortError(j.error))}</span>`
       : (j.exported ? `${j.exported} exported` : esc(j.stage));
-    return `<button class="run ${j.id === jobId ? "current" : ""}" data-id="${j.id}">
+    const mark = j.rating === "good" ? `<span class="run-mark good">✓</span>`
+               : j.rating === "bad" ? `<span class="run-mark bad">✕</span>` : "";
+    return `<button class="run ${j.id === jobId ? "current" : ""}" data-id="${j.id}"
+                    data-thread="${esc(j.thread || "")}" title="${esc(j.product || "")}">
       ${thumb}
       <span class="run-text">
-        <span class="run-name">${esc(j.product || "Untitled run")}</span>
+        <span class="run-name">${esc(j.title || j.product || "Untitled run")}${mark}</span>
         <span class="run-meta">${meta}</span>
       </span></button>`;
   }).join("");
@@ -581,6 +660,7 @@ async function loadJobs() {
   box.querySelectorAll(".run").forEach(b => {
     b.onclick = () => {
       jobId = b.dataset.id;
+      threadId = b.dataset.thread || "";
       lastRender = "";
       $("thread").innerHTML = "";
       watch();

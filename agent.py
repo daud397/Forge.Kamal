@@ -385,8 +385,10 @@ def _run_upscale(job_id: str, args: dict, pool) -> str:
 
 
 def _run_repeat(job_id: str, args: dict, pool) -> str:
+    prior = store.get(job_id) or {}
     new_id = store.create({"created_at": None,
-                           "mode": (store.get(job_id) or {}).get("mode", "edit")})
+                           "mode": prior.get("mode", "edit"),
+                           "thread": prior.get("thread") or job_id})
     pool.submit(_guarded, new_id, pipeline.rerun, job_id, new_id)
     return "Running it again from the same inputs. This one stays in the history."
 

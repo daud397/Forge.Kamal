@@ -353,3 +353,37 @@ button{font:inherit;cursor:pointer}
 }
 .attach-x:hover { opacity: 1; }
 .attach-hint { opacity: .6; font-size: 12px; }
+
+/* Inputs beside the output, so a transfer can be judged without leaving the page. */
+.inputs-cap { margin: 14px 0 6px; font-size: 12px; opacity: .6; }
+.inputs { display: flex; gap: 10px; flex-wrap: wrap; }
+.input-thumb {
+  position: relative; padding: 0; border: 1px solid var(--line, #d8d4cd);
+  border-radius: 8px; overflow: hidden; background: none; cursor: zoom-in;
+  width: 96px;
+}
+.input-thumb img { display: block; width: 96px; height: 96px; object-fit: cover; }
+.input-thumb span {
+  display: block; padding: 3px 6px; font-size: 11px; text-align: left;
+  background: var(--card, #fff); opacity: .75;
+}
+
+/* Was it usable. One click; the thread builds on the accepted run. */
+.rating { display: flex; align-items: center; gap: 8px; margin: 14px 0 4px; font-size: 13px; }
+.rating > span { opacity: .65; }
+.rate {
+  border: 1px solid var(--line, #d8d4cd); background: none; border-radius: 999px;
+  padding: 3px 12px; font-size: 12px; cursor: pointer;
+}
+.rate.on { background: var(--ink, #23324a); color: #fff; border-color: transparent; }
+
+a.act.primary {
+  display: inline-block; text-decoration: none; padding: 6px 14px;
+  border-radius: 999px; background: var(--ink, #23324a); color: #fff; font-size: 13px;
+}
+
+/* Run rows: a real title, a mark for what was accepted, a reason for failure. */
+.run-mark { margin-left: 6px; font-size: 11px; }
+.run-mark.good { color: #2e7d4f; }
+.run-mark.bad { color: #b3352f; }
+.run-meta .bad { color: #b3352f; }
