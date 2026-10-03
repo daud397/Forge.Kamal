@@ -9,7 +9,7 @@ import io
 import math
 
 import numpy as np
-from PIL import Image, ImageFilter, ImageOps
+from PIL import Image, ImageChops, ImageFilter, ImageOps
 from scipy.ndimage import uniform_filter, binary_dilation
 
 import config
@@ -121,6 +121,13 @@ def ssim(a: np.ndarray, b: np.ndarray, mask: np.ndarray | None = None, win: int 
 
 # Refuse decompression bombs well before they fill the container's memory.
 Image.MAX_IMAGE_PIXELS = 120_000_000
+
+# iPhones save HEIC by default. Without this an iPhone photo was "unsupported".
+try:
+    from pillow_heif import register_heif_opener
+    register_heif_opener()
+except ImportError:                     # optional: everything else still works
+    pass
 
 
 def open_upload(path) -> Image.Image:
@@ -256,26 +263,70 @@ def composite_preserve(original: Image.Image, edited: Image.Image,
     pixel-identical across edits. This makes it structural: the model supplies
     the background, the source supplies the product, and a short feather hides
     the seam.
+
+    The composite happens at whichever is larger, the source or the generated
+    frame. It used to happen at the generated size, so a 4000px product photo
+    was shrunk to the model's 1920px before its own pixels went back in - the
+    product was preserved, but at half its resolution. Now the generated
+    background is enlarged to the source and the product keeps every pixel it
+    was photographed with.
     """
-    size = edited.size
-    src = resize_rgba(original, size)          # premultiplied: no black halo
-    edit = edited.convert("RGBA")
+    if original.width * original.height > edited.width * edited.height:
+        size = original.size
+        edit = edited.convert("RGB").resize(size, Image.LANCZOS).convert("RGBA")
+        src = original.convert("RGBA")
+    else:
+        size = edited.size
+        edit = edited.convert("RGBA")
+        src = resize_rgba(original, size)      # premultiplied: no black halo
+    feather = feather * max(1.0, size[0] / edited.width)
 
     # Where the source has its own alpha (a CAD render), that alpha is a better
     # edge than any painted or dilated mask, so intersect the two: the mask says
-    # which object to keep, the alpha says exactly where its edge falls.
-    m = np.asarray(product_mask.resize(size, Image.LANCZOS), dtype=np.float64) / 255.0
-    src_alpha = np.asarray(src)[..., 3].astype(np.float64) / 255.0
-    if src_alpha.min() < 0.999:
-        m = m * src_alpha
+    # which object to keep, the alpha says exactly where its edge falls. Done in
+    # 8 bits: at 24MP a float copy of every plane cost gigabytes.
+    keep = product_mask.convert("L").resize(size, Image.LANCZOS)
+    src_alpha = src.getchannel("A")
+    if src_alpha.getextrema()[0] < 255:
+        keep = ImageChops.multiply(keep, src_alpha)
 
-    keep = Image.fromarray(np.rint(np.clip(m, 0, 1) * 255).astype(np.uint8), "L")
     if feather > 0:
         keep = keep.filter(ImageFilter.GaussianBlur(feather))
 
     out = edit.copy()
     out.paste(src, (0, 0), keep)
     return out.convert("RGB")
+
+
+def pad_to_ratio(img: Image.Image, ratio: float, fill=(0, 0, 0, 0)) -> Image.Image:
+    """Extend the canvas to a new shape without stretching anything.
+
+    Asked for 1:1 from a 4:3 photo, the old path squashed the photo into the
+    square. Padding keeps the product's proportions; the padding is transparent,
+    which the edit treats as area to fill, so the model extends the scene.
+    """
+    w, h = img.size
+    if abs(w / h - ratio) < 0.01:
+        return img
+    if w / h < ratio:
+        nw, nh = round(h * ratio), h
+    else:
+        nw, nh = w, round(w / ratio)
+    mode = "L" if img.mode == "L" else "RGBA"
+    canvas = Image.new(mode, (nw, nh), fill if mode == "RGBA" else 0)
+    src = img if img.mode == mode else img.convert(mode)
+    canvas.paste(src, ((nw - w) // 2, (nh - h) // 2))
+    return canvas
+
+
+def fit_within(img: Image.Image, max_edge: int) -> Image.Image:
+    """Shrink to max_edge on the long side, keeping the shape. Never enlarges."""
+    w, h = img.size
+    if max(w, h) <= max_edge:
+        return img
+    k = max_edge / max(w, h)
+    size = (max(1, round(w * k)), max(1, round(h * k)))
+    return resize_rgba(img, size) if img.mode == "RGBA" else img.resize(size, Image.LANCZOS)
 
 
 # --- Sizing ------------------------------------------------------------------
@@ -315,7 +366,11 @@ def size_for_ratio(ratio: float, target_pixels: int = 1_500_000) -> tuple[int, i
     """A legal generation size at the requested shape."""
     import math
     h = math.sqrt(target_pixels / ratio)
-    return snap_size(round(h * ratio), round(h))
+    m = config.EDGE_MULTIPLE
+    # Round down, so the pixel budget is a ceiling: rounding to nearest put a
+    # 3:4 final at 3,700,736 pixels, over the experimental threshold it exists
+    # to stay under.
+    return snap_size(int(h * ratio) // m * m, int(h) // m * m)
 
 
 def snap_size(width: int, height: int) -> tuple[int, int]:
@@ -336,8 +391,12 @@ def snap_size(width: int, height: int) -> tuple[int, int]:
         k = math.sqrt(config.MIN_PIXELS / total)
         w, h = snap(w * k), snap(h * k)
     elif total > config.MAX_PIXELS:
+        # Round down here: rounding to nearest could land a few pixels over
+        # the ceiling and the API refuses the whole call.
         k = math.sqrt(config.MAX_PIXELS / total)
-        w, h = snap(w * k), snap(h * k)
+        m = config.EDGE_MULTIPLE
+        w = max(m, int(w * k) // m * m)
+        h = max(m, int(h * k) // m * m)
 
     return w, h
 
@@ -374,9 +433,13 @@ def upscale(img: Image.Image, target: tuple[int, int], fit: str = "contain",
 def region_stats(original: Image.Image, result: Image.Image,
                  product_mask: Image.Image) -> dict:
     """Colour and structure fidelity of the product region, plus the edited area."""
-    size = result.size
+    # Measured at no more than 1536px on the long edge. Full-resolution
+    # composites are now 20MP and more, and CIEDE2000 in float64 over that many
+    # pixels costs gigabytes for a number that does not change.
+    size = fit_within(result, 1536).size
     orig = np.asarray(flatten(resize_rgba(original, size)), dtype=np.float64) / 255.0
-    res = np.asarray(flatten(result), dtype=np.float64) / 255.0
+    res = np.asarray(flatten(resize_rgba(result.convert("RGBA"), size)),
+                     dtype=np.float64) / 255.0
 
     m = np.asarray(product_mask.resize(size, Image.LANCZOS)) > 127
     if not m.any():

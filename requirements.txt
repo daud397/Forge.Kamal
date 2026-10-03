@@ -6,6 +6,9 @@ pillow>=10.0
 numpy>=1.26
 scipy>=1.11
 trimesh>=4.0
+# Decimates dense CAD meshes before rendering.
+fast-simplification>=0.1
+# Opens iPhone HEIC photos.
+pillow-heif>=0.16
 # Optional: STEP/IGES support via OpenCascade
 # cascadio>=0.0.9
-fast-simplification>=0.1

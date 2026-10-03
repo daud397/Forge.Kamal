@@ -7,9 +7,11 @@ from __future__ import annotations
 
 import re
 import shutil
+import threading
 import time
 import traceback
 import zipfile
+from contextlib import contextmanager
 from pathlib import Path
 
 import numpy as np
@@ -266,12 +268,51 @@ def delivery_copy(job_id: str, name: str) -> Path:
     return out_path
 
 
-def gen_size(note: str, default: tuple[int, int]) -> tuple[int, int]:
-    """Honour a requested aspect ratio, falling back to the configured size."""
+PREVIEW_EDGES = (512, 1024, 2048)
+
+
+def preview_copy(job_id: str, name: str, edge: int) -> Path:
+    """A light JPEG for the screen, made once and kept.
+
+    Originals are now kept at full resolution - a 24MP PNG can be 40MB - and
+    the page was loading every one of them whole just to show a thumbnail.
+    The screen gets this; the download button still gets the full file.
+    """
+    edge = min((e for e in PREVIEW_EDGES if e >= edge), default=PREVIEW_EDGES[-1])
+    d = job_dir(job_id)
+    src_path = d / name
+    out_path = d / f"preview_{edge}_{Path(name).stem}.jpg"
+    if out_path.exists() and out_path.stat().st_mtime >= src_path.stat().st_mtime:
+        return out_path
+
+    img = Image.open(src_path)
+    if max(img.size) <= edge and img.format == "JPEG":
+        return src_path
+    img = imaging.fit_within(img.convert("RGBA"), edge)
+    imaging.flatten(img).convert("RGB").save(out_path, "JPEG", quality=90)
+    return out_path
+
+
+def gen_size(note: str, default: tuple[int, int], source: Image.Image | None = None,
+             pixels: int | None = None) -> tuple[int, int]:
+    """The generation size: a requested aspect ratio first, else the source's
+    own shape, else the configured default.
+
+    Falling back to the square default for every photo is what squashed a 4:3
+    product shot into 1920x1920 and stretched it back out.
+    """
+    pixels = pixels or default[0] * default[1]
     ratio = imaging.ratio_from_text(note)
+    if ratio is None and source is not None:
+        ratio = source.width / source.height
     if ratio is None:
-        return default
-    return imaging.size_for_ratio(ratio, default[0] * default[1])
+        return imaging.snap_size(*default)
+    return imaging.size_for_ratio(ratio, pixels)
+
+
+def final_size(note: str, source: Image.Image | None = None) -> tuple[int, int]:
+    """The size a final-quality call generates at."""
+    return gen_size(note, config.FINAL_SIZE, source, config.FINAL_PIXELS)
 
 
 def drafts(job_id: str) -> dict:
@@ -296,10 +337,10 @@ def drafts(job_id: str) -> dict:
         raise ValueError("The brief contains no scene prompts to draft from.")
 
     note = state.get("note", "")
-    size = gen_size(note, config.DRAFT_SIZE)
+    size = gen_size(note, config.DRAFT_SIZE, sources[0])
     if size != config.DRAFT_SIZE:
-        store.log(job_id, f"You asked for a specific aspect ratio, so these are "
-                          f"{size[0]}x{size[1]}.")
+        store.log(job_id, f"Drafts keep the shape you asked for or the shape of "
+                          f"your image, so these are {size[0]}x{size[1]}.")
 
     store.log(job_id, f"{config.DRAFT_MODEL} generating {len(prompts)} drafts at "
                       f"{size[0]}x{size[1]}, quality {config.DRAFT_QUALITY}.")
@@ -339,7 +380,7 @@ def finalise(job_id: str, draft_index: int, extra_instruction: str = "",
     # In scratch mode the approved draft IS the source: the refinement pass
     # works on the image the seller picked, not on any uploaded file.
     base = _load(job_id, chosen["file"] if scratch else state["base_image"])
-    size = gen_size(state.get("note", ""), config.FINAL_SIZE)
+    size = final_size(state.get("note", ""), base)
 
     photos = state.get("photos") or []
     extra_refs = ([_load(job_id, n) for n in photos[1:4]]
@@ -360,14 +401,29 @@ def finalise(job_id: str, draft_index: int, extra_instruction: str = "",
         product_mask = None
         store.log(job_id, "No mask available. The edit runs unmasked and the product is not protected.", "warn")
 
+    # A requested shape that differs from the photo's: extend the canvas
+    # rather than squash the product into it. The padding is transparent, so
+    # it is outside the kept region and the model fills it with scene.
+    ratio = size[0] / size[1]
+    if abs(base.width / base.height - ratio) > 0.01:
+        base = imaging.pad_to_ratio(base.convert("RGBA"), ratio)
+        if product_mask:
+            product_mask = imaging.pad_to_ratio(product_mask, ratio)
+        store.log(job_id, f"Extended the canvas to {size[0]}x{size[1]}'s shape "
+                          "instead of stretching the product to fit it.")
+
     mask_png = imaging.edit_mask(product_mask, size) if product_mask else None
     if scratch:
-        prompt_lead = "Refine this photograph. Keep the product, its colour, "\
-                      "material and framing exactly as they are."
+        prompt = ("Refine this photograph. Keep the product, its colour, "
+                  "material and framing exactly as they are.")
     else:
-        prompt_lead = None
-
-    prompt = prompt_lead if prompt_lead else chosen["prompt"]
+        # The seller's own words and the facts read from their photo go in
+        # front of the scene. Sending the scene alone dropped both, and a
+        # "Take one" draft reached the final as just "Follow the requirement
+        # precisely." with no requirement.
+        prompt = models.compose_prompt(
+            chosen["prompt"], state.get("note", ""), state.get("brief") or {},
+            n_images=1 + len(extra_refs or []))
     if extra_instruction.strip():
         prompt = f"{prompt}\n\nAdditional direction: {extra_instruction.strip()}"
 
@@ -375,10 +431,12 @@ def finalise(job_id: str, draft_index: int, extra_instruction: str = "",
     edited = models.final_edit(base, prompt, mask_png, size, extra_refs=extra_refs)
     _save(job_id, edited, "final_raw.png")
 
-    # Hard guarantee, not a hope: the product pixels come from the source.
+    # Hard guarantee, not a hope: the product pixels come from the source, at
+    # the source's full resolution.
     if product_mask:
         composited = imaging.composite_preserve(base, edited, product_mask)
-        store.log(job_id, "Composited the source product back over the generated background.")
+        store.log(job_id, "Composited the source product back over the generated "
+                          f"background at {composited.width}x{composited.height}.")
     else:
         composited = edited
 
@@ -412,6 +470,16 @@ def finalise(job_id: str, draft_index: int, extra_instruction: str = "",
         notes = ["Composed from several reference images, so there is no single "
                  "source to measure against. Check the design against your "
                  "reference by eye."]
+    elif not product_mask:
+        # With no mask the "product region" is the whole frame, so the numbers
+        # compare the old background with the new one that was asked for, and
+        # every such run used to grade as a failure. Paint the product to get a
+        # measured verdict.
+        level = "info"
+        notes = ["No product mask, so the whole frame was free to change and "
+                 "there is nothing to measure the product against. Paint over "
+                 "the product before finalising to get a colour and structure "
+                 "check."]
     else:
         level, notes = imaging.verdict(stats)
     store.log(job_id, f"Model output: dE2000 mean {stats['delta_e_mean']}, "
@@ -470,21 +538,33 @@ def transfer_roles(note: str, n: int) -> tuple[int, int]:
     """
     t = (note or "").lower()
 
+    # Word boundaries throughout: a bare "to" or "on" also matched inside
+    # "photo" and "cotton", which is enough to flip a whole transfer.
+    first, second = r"\b(first|1st|image 1|image one)\b", r"\b(second|2nd|image 2|image two)\b"
+    design = r"\b(design|pattern|print|motif|reference)\b"
+
     # "second image design ... on(to) first" - the reverse of the usual
-    if re.search(r"second[^.]{0,40}design[^.]{0,80}(on|onto|to)[^.]{0,30}first", t):
+    if re.search(second + r"[^.]{0,40}" + design + r"[^.]{0,80}\b(on|onto|to)\b[^.]{0,30}" + first, t):
         return 1, 0
     # the mill's standard: "first image design ... on second"
-    if re.search(r"first[^.]{0,40}(design|reference)[^.]{0,80}(on|onto|to|like)[^.]{0,30}second", t):
+    if re.search(first + r"[^.]{0,40}" + design + r"[^.]{0,80}\b(on|onto|to|like)\b[^.]{0,30}" + second, t):
         return 0, 1
+    # Where the design is said to come from settles it: "the design in the
+    # first image", "the pattern from image 2". Checked before the shorthand
+    # below, which would otherwise read "in the first" as naming the target.
+    if re.search(design + r"\s+(in|from|of)\s+(the\s+)?" + first, t):
+        return 0, min(1, n - 1)
+    if re.search(design + r"\s+(in|from|of)\s+(the\s+)?" + second, t):
+        return min(1, n - 1), 0
     # "use the first image as a reference and make the second like it"
-    if re.search(r"first[^.]{0,50}reference", t) or re.search(r"second[^.]{0,50}like", t):
+    if re.search(first + r"[^.]{0,50}\breference\b", t) or re.search(second + r"[^.]{0,50}\blike\b", t):
         return 0, 1
     # The mill's shorthand names only the target: "apply this design on the
     # second image bed". Whatever is named as the thing being dressed is the
     # target; the other attachment is the design.
-    if re.search(r"\b(on|onto|to|in|into)\b[^.]{0,25}\bsecond\b", t):
+    if re.search(r"\b(on|onto|to|in|into)\b[^.]{0,25}" + second, t):
         return 0, min(1, n - 1)
-    if re.search(r"\b(on|onto|to|in|into)\b[^.]{0,25}\bfirst\b", t):
+    if re.search(r"\b(on|onto|to|in|into)\b[^.]{0,25}" + first, t):
         return min(1, n - 1), 0
     # Unstated: the mill convention is design first, target second.
     return 0, min(1, n - 1)
@@ -544,7 +624,7 @@ def transfer(job_id: str) -> dict:
                       f"image you attached is the design, the {ordinal[target_i]} "
                       "is the bed to produce.")
 
-    size = gen_size(note, config.FINAL_SIZE)
+    size = final_size(note, imgs[target_i])
     store.update(job_id, stage="finalising")
     store.log(job_id, f"{config.FINAL_MODEL} generating one image at "
                       f"{size[0]}x{size[1]}, quality {config.FINAL_QUALITY}, with "
@@ -746,7 +826,7 @@ def _edit_freely(job_id: str, source: Image.Image, instruction: str) -> Image.Im
         "photograph so any change looks like it was there when the shot was "
         "taken. Photographic, no text, no logos, no watermarks."
     )
-    return models.final_edit(source, prompt, None, config.FINAL_SIZE)
+    return models.final_edit(source, prompt, None, final_size("", source))
 
 
 def _edit_region(job_id: str, source: Image.Image, instruction: str,
@@ -762,7 +842,7 @@ def _edit_region(job_id: str, source: Image.Image, instruction: str,
     if not instruction.strip():
         raise ValueError("Say what should change in the area you painted.")
 
-    size = config.FINAL_SIZE
+    size = final_size("", source)
     editable = imaging.mask_from_strokes(region_png, source.size)
 
     # mask_from_strokes marks what was painted. Here painted means "change
@@ -784,7 +864,8 @@ def _edit_region(job_id: str, source: Image.Image, instruction: str,
 
     result = imaging.composite_preserve(source, edited, keep, feather=2.0)
     store.log(job_id, "Everything outside the painted area restored from the "
-                      "previous version.")
+                      f"previous version at full resolution ({result.width}x"
+                      f"{result.height}).")
     return result
 
 
@@ -801,11 +882,25 @@ def _upscale(job_id: str, source: Image.Image, scale: float,
     w, h = source.size
     # One factor for both edges. Clamping each edge separately changed the
     # aspect, and fit="contain" then padded the difference with white bars.
-    k = min(scale, config.MAX_EDGE / max(w, h))
+    # Never below 1: an enlarge must not shrink an image that is already big.
+    k = max(1.0, min(scale, config.UPSCALE_MAX_EDGE / max(w, h)))
     target = (max(1, int(w * k)), max(1, int(h * k)))
+    if k == 1.0:
+        store.log(job_id, f"Already {w}x{h}, at or past the {config.UPSCALE_MAX_EDGE}px "
+                          "enlarge limit, so the size is kept as it is.")
 
-    if config.UPSCALE_DETAIL_PASS if detail is None else detail:
-        gen_w, gen_h = imaging.snap_size(*target)
+    want_detail = config.UPSCALE_DETAIL_PASS if detail is None else detail
+    if want_detail and w * h >= config.FINAL_PIXELS:
+        # The model returns at most FINAL_PIXELS. Sending it a photo that
+        # already has more would replace real captured pixels with fewer
+        # generated ones - the opposite of sharper.
+        store.log(job_id, f"Skipped the generative detail pass: at {w}x{h} your "
+                          "image already has more real detail than the model can "
+                          "return. Enlarging with Lanczos only.")
+        want_detail = False
+
+    if want_detail:
+        gen_w, gen_h = final_size("", source)
         store.log(job_id, f"{config.FINAL_MODEL} restoring detail at {gen_w}x{gen_h}.")
         try:
             source = models.final_edit(
@@ -883,34 +978,36 @@ def export(job_id: str, preset_names: list[str]) -> dict:
 
     for name in preset_names:
         spec = preset(name)
-        target = spec["size"]
+        target = spec["size"] or src.size          # None: keep the image's own size
         bg = "transparent" if spec["background"] == "transparent" else "white"
 
-        out = imaging.upscale(src, target, fit="contain", background=bg)
+        out = (src.copy() if tuple(target) == src.size
+               else imaging.upscale(src, target, fit="contain", background=bg))
 
         fmt = spec["format"].upper()
         ext = {"JPEG": "jpg", "WEBP": "webp", "PNG": "png"}[fmt]
         filename = f"export_{name}.{ext}"
 
         if fmt == "JPEG":
-            out.convert("RGB").save(d / filename, "JPEG", quality=95,
-                                    subsampling=0, optimize=True)
+            imaging.flatten(out).convert("RGB").save(
+                d / filename, "JPEG", quality=97, subsampling=0, optimize=True)
         elif fmt == "WEBP":
-            out.save(d / filename, "WEBP", quality=92, method=5)
+            out.save(d / filename, "WEBP", quality=95, method=5)
         else:
             out.save(d / filename, "PNG")
 
         scale = target[0] / src.width
+        how = "no resize" if tuple(target) == src.size else f"{scale:.2f}x Lanczos"
         written.append({
             "preset": name,
             "label": spec["label"],
             "file": filename,
             "size": f"{target[0]}x{target[1]}",
-            "scale": f"{scale:.2f}x Lanczos",
+            "scale": how,
             "generative_allowed": spec["generative"],
             "note": spec["note"],
         })
-        store.log(job_id, f"{spec['label']}: {target[0]}x{target[1]} via {scale:.2f}x Lanczos, no generative pass.")
+        store.log(job_id, f"{spec['label']}: {target[0]}x{target[1]} via {how}, no generative pass.")
 
     zip_path = d / "exports.zip"
     with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as z:
@@ -1028,15 +1125,18 @@ def previous_run(thread: str = "", exclude: str = "") -> dict | None:
     hazard once two people use the portal on the same afternoon. A run they
     marked good wins over a more recent one they said nothing about: if they
     told us which output was right, that is the one to build on.
+
+    The thread is queried directly. Taking the server's 40 newest runs and
+    filtering them meant that on a busy afternoon a seller's own previous run
+    had already dropped out of the window.
     """
+    if not thread:
+        return None
     candidates = []
-    for row in store.recent(limit=40):
-        if row["id"] == exclude:
+    for state in store.in_thread(thread, limit=40):
+        if state.get("id") == exclude:
             continue
-        if thread and (row.get("thread") or "") != thread:
-            continue
-        state = store.get(row["id"])
-        if not state or not (state.get("photos") or []):
+        if not (state.get("photos") or []):
             continue
         prior = (state.get("note") or "").strip()
         if prior and not is_backref(prior):
@@ -1101,23 +1201,24 @@ def run_auto(job_id: str, uploads: list[tuple[str, bytes]], note: str):
     fewer model calls and no waiting on options that were never wanted.
     """
     try:
-        follow_on = None
-        if is_backref(note):
-            follow_on = previous_run(
-                thread=(store.get(job_id) or {}).get("thread") or "",
-                exclude=job_id)
+        with working(job_id):
+            follow_on = None
+            if is_backref(note):
+                follow_on = previous_run(
+                    thread=(store.get(job_id) or {}).get("thread") or "",
+                    exclude=job_id)
+                if follow_on:
+                    store.log(job_id, "Read as a follow-up to your last run, so the "
+                                      "instruction from that run is reused word for "
+                                      "word with this new attachment.")
+                    note = (follow_on.get("note") or "").strip()
+
+            ingest(job_id, uploads, note)
+
             if follow_on:
-                store.log(job_id, "Read as a follow-up to your last run, so the "
-                                  "instruction from that run is reused word for "
-                                  "word with this new attachment.")
-                note = (follow_on.get("note") or "").strip()
+                carry_target(job_id, follow_on)
 
-        ingest(job_id, uploads, note)
-
-        if follow_on:
-            carry_target(job_id, follow_on)
-
-        route(job_id, note)
+            route(job_id, note)
     except Exception as exc:
         store.log(job_id, f"{type(exc).__name__}: {exc}", "error")
         store.log(job_id, traceback.format_exc(limit=3), "error")
@@ -1127,8 +1228,9 @@ def run_auto(job_id: str, uploads: list[tuple[str, bytes]], note: str):
 def run_describe(job_id: str, description: str):
     """Description through to drafts, then stop for a human to choose."""
     try:
-        describe(job_id, description)
-        drafts_scratch(job_id)
+        with working(job_id):
+            describe(job_id, description)
+            drafts_scratch(job_id)
     except Exception as exc:
         store.log(job_id, f"{type(exc).__name__}: {exc}", "error")
         store.update(job_id, stage="failed", error=str(exc))
@@ -1139,9 +1241,10 @@ def run_enhance(job_id: str, instruction: str, action: str, scale: float,
                 region_png: bytes | None = None, detail: bool | None = None,
                 source_file: str | None = None):
     try:
-        enhance(job_id, instruction, action, scale, region_png, detail, source_file)
-        if presets_wanted:
-            export(job_id, presets_wanted)
+        with working(job_id):
+            enhance(job_id, instruction, action, scale, region_png, detail, source_file)
+            if presets_wanted:
+                export(job_id, presets_wanted)
     except Exception as exc:
         store.log(job_id, f"{type(exc).__name__}: {exc}", "error")
         store.update(job_id, stage="failed", error=str(exc))
@@ -1150,9 +1253,10 @@ def run_enhance(job_id: str, instruction: str, action: str, scale: float,
 def run_use_as_is(job_id: str, draft_index: int,
                   presets_wanted: list[str] | None = None):
     try:
-        use_as_is(job_id, draft_index)
-        if presets_wanted:
-            export(job_id, presets_wanted)
+        with working(job_id):
+            use_as_is(job_id, draft_index)
+            if presets_wanted:
+                export(job_id, presets_wanted)
     except Exception as exc:
         store.log(job_id, f"{type(exc).__name__}: {exc}", "error")
         store.update(job_id, stage="failed", error=str(exc))
@@ -1160,7 +1264,8 @@ def run_use_as_is(job_id: str, draft_index: int,
 
 def run_redraft(job_id: str):
     try:
-        redraft(job_id)
+        with working(job_id):
+            redraft(job_id)
     except Exception as exc:
         store.log(job_id, f"{type(exc).__name__}: {exc}", "error")
         store.update(job_id, stage="failed", error=str(exc))
@@ -1168,10 +1273,47 @@ def run_redraft(job_id: str):
 
 def run_rerun(job_id: str, new_job_id: str):
     try:
-        rerun(job_id, new_job_id)
+        with working(new_job_id):
+            rerun(job_id, new_job_id)
     except Exception as exc:
         store.log(new_job_id, f"{type(exc).__name__}: {exc}", "error")
         store.update(new_job_id, stage="failed", error=str(exc))
+
+
+_locks: dict[str, threading.RLock] = {}
+_locks_guard = threading.Lock()
+
+
+def job_lock(job_id: str) -> threading.RLock:
+    """One piece of work per run at a time.
+
+    Two actions on one run - a double click, or chat and a button together -
+    both read the version list, both wrote v3.png and final_composited.png,
+    and one version silently disappeared. The second action now waits.
+    """
+    with _locks_guard:
+        return _locks.setdefault(job_id, threading.RLock())
+
+
+_pending: dict[str, int] = {}
+
+
+@contextmanager
+def working(job_id: str):
+    """Hold the run's lock for one piece of work, and count it off when done."""
+    with job_lock(job_id):
+        try:
+            yield
+        finally:
+            with _locks_guard:
+                if _pending.get(job_id):
+                    _pending[job_id] -= 1
+
+
+def busy(job_id: str) -> bool:
+    """Is work queued or running on this run? The page keeps polling while so."""
+    with _locks_guard:
+        return _pending.get(job_id, 0) > 0
 
 
 def queue(job_id: str) -> None:
@@ -1179,14 +1321,18 @@ def queue(job_id: str) -> None:
 
     Without it the browser polls, still sees the previous "finalised" or
     "drafted", decides the job is done and stops watching before the worker
-    has even started.
+    has even started - or, with a second action waiting behind the first,
+    stops when the first one finishes.
     """
+    with _locks_guard:
+        _pending[job_id] = _pending.get(job_id, 0) + 1
     store.update(job_id, stage="queued", error=None)
 
 
 def run_export(job_id: str, presets_wanted: list[str]):
     try:
-        export(job_id, presets_wanted)
+        with working(job_id):
+            export(job_id, presets_wanted)
     except Exception as exc:
         store.log(job_id, f"{type(exc).__name__}: {exc}", "error")
         store.update(job_id, stage="failed", error=str(exc))
@@ -1195,9 +1341,10 @@ def run_export(job_id: str, presets_wanted: list[str]):
 def run_finalise(job_id: str, draft_index: int, instruction: str,
                  painted_mask: bytes | None, presets_wanted: list[str]):
     try:
-        finalise(job_id, draft_index, instruction, painted_mask)
-        if presets_wanted:
-            export(job_id, presets_wanted)
+        with working(job_id):
+            finalise(job_id, draft_index, instruction, painted_mask)
+            if presets_wanted:
+                export(job_id, presets_wanted)
     except Exception as exc:
         store.log(job_id, f"{type(exc).__name__}: {exc}", "error")
         store.log(job_id, traceback.format_exc(limit=3), "error")

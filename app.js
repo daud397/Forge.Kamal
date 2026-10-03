@@ -306,7 +306,8 @@ async function refresh() {
 
   render(state);
 
-  if (["drafted", "finalised", "exported", "failed"].includes(state.stage)) {
+  if (!state.busy &&
+      ["drafted", "finalised", "exported", "failed"].includes(state.stage)) {
     clearInterval(poll);
     loadJobs();
   }
@@ -414,10 +415,10 @@ function imageCard(heading, items, state, cols, pickable) {
     b.className = "shot" + (pickable ? " pick" : "") +
       (state.chosen_draft === it.index ? " chosen" : "");
     b.innerHTML = `<span class="frame">
-        <img src="${esc(fileUrl(it.file))}" alt="${esc(it.label)}">
+        <img src="${esc(fileUrl(it.file) + "?w=1024")}" alt="${esc(it.label)}">
       </span><span class="cap">${esc(it.label)}</span>`;
 
-    b.onclick = () => zoom(`/api/jobs/${jobId}/file/${it.file}`, {
+    b.onclick = () => zoom(fileUrl(it.file) + "?w=2048", {
       label: it.label,
       use: pickable ? () => choose(it.index, it.label) : null,
       asIs: pickable ? () => useAsIs(it.index, it.label) : null,
@@ -429,12 +430,15 @@ function imageCard(heading, items, state, cols, pickable) {
 }
 
 function finalCard(state) {
+  // Changes whenever the run does anything, so a re-finalised image is never
+  // served from the browser's cache under the same URL.
+  const ver = (state.log || []).length;
   const card = document.createElement("div");
   card.className = "card single";
   card.innerHTML = `
     <h3>Final image</h3>
     <div class="frame">
-      <img id="finalimg" src="/api/jobs/${jobId}/file/${state.final_file}?v=${(state.versions || []).length}" alt="Final image">
+      <img id="finalimg" src="${esc(fileUrl(state.final_file) + "?w=2048&v=" + ver)}" alt="Final image">
     </div>`;
 
   const qa = state.qa;
@@ -472,9 +476,9 @@ function finalCard(state) {
       const fig = document.createElement("button");
       fig.className = "input-thumb";
       fig.title = "Open " + file;
-      fig.innerHTML = `<img src="${esc(fileUrl(file))}" alt="">
+      fig.innerHTML = `<img src="${esc(fileUrl(file) + "?w=512")}" alt="">
         <span>${i + 1}${role ? " · " + role : ""}</span>`;
-      fig.onclick = () => zoom(`/api/jobs/${jobId}/file/${file}`,
+      fig.onclick = () => zoom(fileUrl(file) + "?w=2048",
                                { label: `input ${i + 1}` });
       strip.appendChild(fig);
     });
@@ -512,21 +516,21 @@ function finalCard(state) {
 
   const dl = document.createElement("a");
   dl.className = "act primary";
-  dl.href = `/api/jobs/${jobId}/file/${state.final_file}?full=1`;
+  dl.href = fileUrl(state.final_file) + "?full=1&v=" + ver;
   dl.download = "";
   dl.textContent = "↓ Download full size";
-  dl.title = "Delivered at 3000px for marketplace listings";
+  dl.title = "Full resolution, lossless PNG, never smaller than 3000px";
   acts.appendChild(dl);
 
   add(acts, "Another set of options", moreOptions);
   add(acts, "Edit image", () =>
-    openEditor(`/api/jobs/${jobId}/file/${state.final_file}?v=${(state.versions || []).length}`));
+    openEditor(fileUrl(state.final_file) + "?w=2048&v=" + ver));
   add(acts, "Enlarge 2×", () => enhance("upscale"));
   add(acts, "Run again", repeat);
 
   (state.exports || []).forEach(e => {
     const a = document.createElement("a");
-    a.href = `/api/jobs/${jobId}/file/${e.file}?full=1`;
+    a.href = fileUrl(e.file) + "?v=" + ver;
     a.download = "";
     a.textContent = "↓ " + e.label;
     if (!e.generative_allowed) {
@@ -544,7 +548,7 @@ function finalCard(state) {
   $("thread").appendChild(card);
 
   card.querySelector("#finalimg").onclick = () =>
-    zoom(`/api/jobs/${jobId}/file/${state.final_file}?v=${(state.versions || []).length}`,
+    zoom(fileUrl(state.final_file) + "?w=2048&v=" + ver,
          { label: "Final image" });
 }
 
@@ -619,7 +623,8 @@ let lbUse = null, lbAsIs = null;
 function zoom(src, opts = {}) {
   $("lbimg").src = src;
   $("lblabel").textContent = opts.label || "";
-  $("lbdownload").href = src + (src.includes("?") ? "&" : "?") + "full=1";
+  // The screen shows a preview; the download is always the full file.
+  $("lbdownload").href = src.split("?")[0] + "?full=1";
   $("lbdownload").download = (opts.label || "image").replace(/[^a-z0-9]+/gi, "-").toLowerCase() + ".png";
 
   lbUse = opts.use || null;

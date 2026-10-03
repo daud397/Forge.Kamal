@@ -54,11 +54,13 @@ never described, because it's composited in unchanged.
 **Drafts.** `gpt-image-2.5-flare`, one call per scene, 1024×1024 at medium
 quality. Cheap enough to throw away, which is the point of a draft.
 
-**Final.** `gpt-image-2.5-sunburst` at 1536×1536, high quality, with the mask.
-Then the product pixels are composited back from the source. This is deliberate:
-OpenAI's own guidance says that if a region must stay pixel-identical you should
-composite rather than rely on prompting, because repeated edits drift. So the
-model supplies the background and your source file supplies the product.
+**Final.** `gpt-image-2.5-sunburst` at about 3.7 megapixels (1920×1920 for a
+square, the same pixel count in your photo's own shape otherwise), high quality,
+with the mask. Then the product pixels are composited back from the source. This
+is deliberate: OpenAI's own guidance says that if a region must stay
+pixel-identical you should composite rather than rely on prompting, because
+repeated edits drift. So the model supplies the background and your source file
+supplies the product.
 
 **QA.** Two halves, deliberately separated:
 
@@ -76,7 +78,32 @@ readily. CIEDE2000 will not.
 **Export.** Lanczos only. No second generative pass, so the upscale can't invent
 detail that wasn't there. Generation deliberately stays under OpenAI's
 3,686,400-pixel experimental threshold and the resize carries it the rest of the
-way — cheaper and more predictable than generating at 4K.
+way — cheaper and more predictable than generating at 4K. JPEG exports are
+quality 97 with no chroma subsampling; *Full resolution (lossless)* exports the
+finished image at its own size as PNG.
+
+## Resolution: what you upload is what you get back
+
+The image model cannot return more than a few thousand pixels, so the pipeline
+is built to keep your own pixels wherever it can:
+
+- **Uploads are kept at full size** — up to 8192px on the long edge
+  (`PHOTO_MAX_EDGE`), EXIF rotation applied, 16-bit and HEIC files read
+  correctly. The model is sent a 2048px copy (`MODEL_INPUT_MAX_EDGE`); the
+  original stays on disk.
+- **Nothing is stretched.** Generation uses your photo's own shape. If you ask
+  for a different ratio, the canvas is extended rather than the product squashed.
+- **Product pixels come back at full resolution.** A masked final, or an edit
+  of a painted area, composites your untouched pixels at the source's own size,
+  so a 6000px product photo comes back 6000px with the product exactly as shot.
+- **Downloads are full size, lossless PNG**, never smaller than `DELIVER_EDGE`
+  (3000px). The screen shows lightweight previews; the download button and the
+  lightbox's download always give the full file.
+
+What still comes from the model alone — a design transfer, an unmasked
+whole-frame edit, a generated scene — is limited to the model's output size and
+enlarged with Lanczos. Set `FINAL_PIXELS=8294400` to generate at the API's
+ceiling (about 2880×2880) for those; OpenAI marks that size experimental.
 
 ## Two ways to start a run
 
@@ -193,8 +220,9 @@ comes back with the background untouched and the product mangled, flip
 
 **Rate limits and cost.** Jobs run on a two-worker thread pool, which is fine
 for one person and wrong for a team. Swap in Redis and a real queue before more
-than a couple of people use it at once. Nothing tracks spend yet — worth adding
-before a batch run.
+than a couple of people use it at once. Spend is estimated and capped per day
+(see the deployment section); check it against your OpenAI dashboard before a
+batch run.
 
 **Renderer coverage.** The rasterizer handles solid geometry with per-face flat
 shading. It has no materials, no textures, no transparency, and no support for
@@ -214,7 +242,7 @@ Hostinger supports Python only on their VPS plans, not shared or web hosting,
 because it needs root to install Python and its dependencies. Anything below VPS
 cannot run this.
 
-`deploy/setup.sh` does the whole server build on a fresh Ubuntu 22.04 or 24.04
+`setup.sh` does the whole server build on a fresh Ubuntu 22.04 or 24.04
 box: system packages, a service account that cannot log in, a virtualenv, a
 systemd unit that survives reboots, Nginx in front, a firewall, and a Let's
 Encrypt certificate.
@@ -222,7 +250,7 @@ Encrypt certificate.
 ```bash
 # on the VPS, as root
 unzip listing-forge.zip -d /opt
-bash /opt/listing-forge/deploy/setup.sh yourdomain.com
+bash /opt/listing-forge/setup.sh yourdomain.com
 nano /opt/listing-forge/.env        # paste OPENAI_API_KEY
 systemctl restart forge
 ```
@@ -286,7 +314,10 @@ railway up
 Then in the Railway dashboard:
 
 1. **Variables** - add `OPENAI_API_KEY`, `PORTAL_PASSWORD`, `SESSION_SECRET`
-   (any long random string), `HTTPS=1`, and `DAILY_CAP`.
+   (any long random string), `HTTPS=1`, and `DAILY_CAP`. `TRUSTED_PROXY_HOPS=1`
+   is already set in the Dockerfile so the login limit sees each person's own
+   address rather than Railway's proxy. Without `SESSION_SECRET`, everyone is
+   signed out on every redeploy.
 2. **Volumes** - attach one mounted at `/app/data`. This is not optional. The
    container filesystem is wiped on every redeploy, so without a volume every
    job, render and export disappears the moment you push a change.

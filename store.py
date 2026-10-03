@@ -64,6 +64,33 @@ def update(job_id: str, **fields) -> dict:
     return state
 
 
+def append_chat(job_id: str, messages: list[dict], keep: int) -> None:
+    """Add to the chat history in one step.
+
+    Reading the history at the start of a turn and writing it back at the end
+    - with a model call in between - meant two turns at once each wrote back
+    their own copy, and one exchange vanished.
+    """
+    with _lock, _conn() as c:
+        row = c.execute("SELECT state FROM jobs WHERE id=?", (job_id,)).fetchone()
+        if not row:
+            return
+        state = json.loads(row["state"])
+        state["chat"] = (state.get("chat") or []) + messages
+        state["chat"] = state["chat"][-keep:]
+        c.execute("UPDATE jobs SET updated=?, state=? WHERE id=?",
+                  (time.time(), json.dumps(state), job_id))
+
+
+def in_thread(thread: str, limit: int = 40) -> list[dict]:
+    """The newest runs in one conversation thread, whole state, newest first."""
+    with _lock, _conn() as c:
+        rows = c.execute(
+            "SELECT state FROM jobs WHERE json_extract(state, '$.thread') = ? "
+            "ORDER BY created DESC LIMIT ?", (thread, limit)).fetchall()
+    return [json.loads(r["state"]) for r in rows]
+
+
 def log(job_id: str, message: str, level: str = "info"):
     with _lock, _conn() as c:
         row = c.execute("SELECT state FROM jobs WHERE id=?", (job_id,)).fetchone()

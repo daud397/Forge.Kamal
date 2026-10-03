@@ -434,7 +434,8 @@ def _submit(pool, job_id, fn, *args):
 def _guarded(job_id, fn, *args):
     """Background work from chat fails into the log, never silently."""
     try:
-        fn(*args)
+        with pipeline.working(job_id):
+            fn(*args)
     except Exception as exc:
         store.log(job_id, f"{type(exc).__name__}: {exc}", "error")
         store.update(job_id, stage="failed", error=str(exc))
@@ -455,8 +456,9 @@ def respond(job_id: str, message: str, pool) -> dict:
     else:
         reply, actions = _offline_turn(job_id, message, state, pool)
 
-    history.append({"role": "assistant", "content": reply})
-    store.update(job_id, chat=history[-(MAX_HISTORY * 2):])
+    store.append_chat(job_id, [{"role": "user", "content": message},
+                               {"role": "assistant", "content": reply}],
+                      keep=MAX_HISTORY * 2)
     return {"reply": reply, "actions": actions}
 
 
@@ -494,13 +496,13 @@ def _live_turn(job_id, message, history, state, pool):
     last = None
     # Chat is a paid call like any other, so it sits under the daily cap and
     # shows up in usage.
-    budget.check_text()
     for attempt in attempts:
+        booked = budget.reserve("text", config.REASONING_MODEL, job_id=job_id)
         try:
             resp = client.chat.completions.create(**attempt)
-            budget.record("text", config.REASONING_MODEL, job_id=job_id)
             break
         except Exception as exc:
+            budget.release(booked)
             last = exc
     if resp is None:
         raise last
@@ -545,7 +547,9 @@ def _offline_turn(job_id, message, state, pool):
     for word, key in [("amazon", "amazon_secondary"), ("etsy", "etsy"),
                       ("shopify", "shopify"), ("ebay", "ebay"),
                       ("transparent", "transparent_png"), ("4k", "hero_4k"),
-                      ("hero", "hero_4k")]:
+                      ("hero", "hero_4k"), ("full res", "full_res"),
+                      ("full-res", "full_res"), ("full size", "full_res"),
+                      ("lossless", "full_res"), ("original size", "full_res")]:
         if word in text and key not in named:
             named.append(key)
 
@@ -631,12 +635,15 @@ def _offline_turn(job_id, message, state, pool):
     if "qa" in text or "quality" in text or "why" in text:
         if qa:
             s = qa.get("stats", {})
-            return (f"Verdict {qa.get('level')}. The model's raw output drifted "
-                    f"{s.get('delta_e_mean')} dE2000 with SSIM {s.get('ssim_product')}. "
-                    + (f"After compositing the residual is "
-                       f"{qa['residual'].get('delta_e_mean')} dE, so the delivered "
-                       "image is clean." if (qa.get("residual") or {}).get("delta_e_mean")
-                       is not None else "There was no composite step on this one.")), []
+            residual = (qa.get("residual") or {}).get("delta_e_mean")
+            reply = (f"Verdict {qa.get('level')}. The model's raw output drifted "
+                     f"{s.get('delta_e_mean')} dE2000 with SSIM {s.get('ssim_product')}. ")
+            if residual is not None and residual < config.DELTA_E_PASS:
+                reply += (f"After compositing the residual is {residual} dE, so the "
+                          "delivered product pixels are your own.")
+            if qa.get("notes"):
+                reply += " " + qa["notes"][0]
+            return reply.strip(), []
         return "No quality check has run yet.", []
 
     return (f"Mock mode has no model behind the chat, so it only understands direct "

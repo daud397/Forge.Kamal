@@ -80,6 +80,25 @@ def authorised(request: Request) -> bool:
     return bool(token and _verify(token))
 
 
+def client_ip(request: Request) -> str:
+    """The address to rate-limit, as seen past any proxies we sit behind.
+
+    On Railway every request arrives from Railway's edge proxy, so keying on
+    the socket address meant eight wrong guesses by anyone locked the whole
+    team out. TRUSTED_PROXY_HOPS says how many proxies append to
+    X-Forwarded-For in front of us (1 on Railway); the client is that many
+    entries from the right. Entries further left are whatever the client sent
+    and could be forged, so they are never used. 0 (the default, and right
+    behind the VPS's own Nginx, which uvicorn already trusts) uses the socket.
+    """
+    hops = int(os.getenv("TRUSTED_PROXY_HOPS", "0") or 0)
+    forwarded = [p.strip() for p in request.headers.get("x-forwarded-for", "").split(",")
+                 if p.strip()]
+    if hops > 0 and len(forwarded) >= hops:
+        return forwarded[-hops]
+    return request.client.host if request.client else "unknown"
+
+
 def check_rate(ip: str):
     now = time.time()
     recent = [t for t in _failures.get(ip, []) if now - t < WINDOW]

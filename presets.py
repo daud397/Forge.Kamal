@@ -61,6 +61,16 @@ PRESETS = {
         "generative": True,
         "note": "For your own storefront banner. Wide crop, product off-centre.",
     },
+    "full_res": {
+        "label": "Full resolution (lossless)",
+        "size": None,
+        "format": "png",
+        "background": "any",
+        "fill": 1.0,
+        "generative": True,
+        "note": "The finished image at its own full size, lossless. No resize, no "
+                "compression - the master to keep, print from, or crop yourself.",
+    },
     "transparent_png": {
         "label": "Transparent cutout",
         "size": (2048, 2048),

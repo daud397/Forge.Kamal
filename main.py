@@ -42,7 +42,7 @@ def login_form(request: Request):
 
 @app.post("/login")
 def login_submit(request: Request, password: str = Form("")):
-    ip = request.client.host if request.client else "unknown"
+    ip = auth.client_ip(request)
     try:
         ok = auth.attempt(password, ip)
     except HTTPException as exc:
@@ -90,7 +90,8 @@ def status():
         "templates": SHOT_TEMPLATES,
         "spend": budget.summary(),
         "presets": {k: {"label": v["label"],
-                        "size": f"{v['size'][0]}x{v['size'][1]}",
+                        "size": (f"{v['size'][0]}x{v['size'][1]}" if v["size"]
+                                 else "original"),
                         "format": v["format"],
                         "generative": v["generative"],
                         "note": v["note"]} for k, v in PRESETS.items()},
@@ -180,6 +181,7 @@ def get_job(job_id: str):
     state = store.get(job_id)
     if not state:
         raise HTTPException(404, "No such job.")
+    state["busy"] = pipeline.busy(job_id)
     return state
 
 
@@ -298,7 +300,7 @@ def chat(job_id: str, message: str = Form(...)):
 
 
 @app.get("/api/jobs/{job_id}/file/{name}")
-def job_file(job_id: str, name: str, full: int = 0):
+def job_file(job_id: str, name: str, full: int = 0, w: int = 0):
     if "/" in name or "\\" in name or ".." in name:
         raise HTTPException(400, "Bad filename.")
     if not pipeline.JOB_ID.match(job_id) or not store.get(job_id):
@@ -310,6 +312,13 @@ def job_file(job_id: str, name: str, full: int = 0):
     # full=1 is what the download button asks for. The image on screen is the
     # generator's own output; a listing wants a bigger file than that, and if
     # we do not enlarge it here the marketplace or the browser will, worse.
+    # w=<px> is what the page asks for when it only needs to show the image.
+    if w and not full and not name.startswith("export_") and name != "exports.zip":
+        try:
+            return FileResponse(pipeline.preview_copy(job_id, name, w))
+        except Exception:
+            pass
+
     if full and not name.startswith("export_"):
         try:
             return FileResponse(pipeline.delivery_copy(job_id, name))
