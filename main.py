@@ -119,6 +119,7 @@ async def create_job(files: list[UploadFile] = File(...), note: str = Form(""),
     thread = (thread or "").strip() or uuid.uuid4().hex[:12]
 
     job_id = store.create({"created_at": None, "thread": thread})
+    pipeline.queue(job_id)
     pool.submit(pipeline.run_auto, job_id, uploads, note)
     return {"job_id": job_id, "thread": thread}
 
@@ -132,6 +133,7 @@ def describe_job(description: str = Form(...)):
 
     thread = uuid.uuid4().hex[:12]
     job_id = store.create({"created_at": None, "mode": "scratch", "thread": thread})
+    pipeline.queue(job_id)
     pool.submit(pipeline.run_describe, job_id, text)
     return {"job_id": job_id, "thread": thread}
 
@@ -250,6 +252,7 @@ def rerun(job_id: str):
 
     new_id = store.create({"created_at": None, "mode": old.get("mode", "edit"),
                            "thread": old.get("thread") or job_id})
+    pipeline.queue(new_id)
     pool.submit(pipeline.run_rerun, job_id, new_id)
     return {"job_id": new_id}
 

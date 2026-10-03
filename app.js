@@ -624,7 +624,10 @@ function zoom(src, opts = {}) {
   $("lbimg").src = src;
   $("lblabel").textContent = opts.label || "";
   // The screen shows a preview; the download is always the full file.
-  $("lbdownload").href = src.split("?")[0] + "?full=1";
+  // Keep the version token, so a re-finalised image is never served from
+  // the browser's cache under the old URL.
+  const ver = (src.match(/[?&](v=\d+)/) || [])[1];
+  $("lbdownload").href = src.split("?")[0] + "?full=1" + (ver ? "&" + ver : "");
   $("lbdownload").download = (opts.label || "image").replace(/[^a-z0-9]+/gi, "-").toLowerCase() + ".png";
 
   lbUse = opts.use || null;
