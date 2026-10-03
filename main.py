@@ -42,7 +42,7 @@ def login_form(request: Request):
 
 @app.post("/login")
 def login_submit(request: Request, password: str = Form("")):
-    ip = request.client.host if request.client else "unknown"
+    ip = auth.client_ip(request)
     try:
         ok = auth.attempt(password, ip)
     except HTTPException as exc:
@@ -90,7 +90,8 @@ def status():
         "templates": SHOT_TEMPLATES,
         "spend": budget.summary(),
         "presets": {k: {"label": v["label"],
-                        "size": f"{v['size'][0]}x{v['size'][1]}",
+                        "size": (f"{v['size'][0]}x{v['size'][1]}" if v["size"]
+                                 else "original"),
                         "format": v["format"],
                         "generative": v["generative"],
                         "note": v["note"]} for k, v in PRESETS.items()},
@@ -101,11 +102,13 @@ def status():
 async def create_job(files: list[UploadFile] = File(...), note: str = Form(""),
                      thread: str = Form("")):
     uploads = []
+    if len(files) > 12:
+        raise HTTPException(413, "Attach at most 12 files to one run.")
     for f in files:
-        blob = await f.read()
+        blob = await f.read(80 * 1024 * 1024 + 1)
         if len(blob) > 80 * 1024 * 1024:
             raise HTTPException(413, f"{f.filename} is over 80 MB.")
-        uploads.append((f.filename, blob))
+        uploads.append((f.filename or "upload", blob))
 
     if not uploads:
         raise HTTPException(400, "No files received.")
@@ -127,10 +130,10 @@ def describe_job(description: str = Form(...)):
     if len(text) < 3:
         raise HTTPException(400, "Describe the product in a few words.")
 
-    job_id = store.create({"created_at": None, "mode": "scratch",
-                           "thread": uuid.uuid4().hex[:12]})
+    thread = uuid.uuid4().hex[:12]
+    job_id = store.create({"created_at": None, "mode": "scratch", "thread": thread})
     pool.submit(pipeline.run_describe, job_id, text)
-    return {"job_id": job_id}
+    return {"job_id": job_id, "thread": thread}
 
 
 @app.get("/api/jobs")
@@ -178,7 +181,21 @@ def get_job(job_id: str):
     state = store.get(job_id)
     if not state:
         raise HTTPException(404, "No such job.")
+    state["busy"] = pipeline.busy(job_id)
     return state
+
+
+MASK_LIMIT = 20 * 1024 * 1024
+
+
+async def _small(upload: UploadFile | None) -> bytes | None:
+    """A painted mask is a few hundred KB; anything near this is not a mask."""
+    if not upload:
+        return None
+    blob = await upload.read(MASK_LIMIT + 1)
+    if len(blob) > MASK_LIMIT:
+        raise HTTPException(413, "That mask is too large.")
+    return blob
 
 
 @app.post("/api/jobs/{job_id}/finalise")
@@ -190,9 +207,10 @@ async def finalise(job_id: str,
     if not store.get(job_id):
         raise HTTPException(404, "No such job.")
 
-    painted = await mask.read() if mask else None
-    wanted = [p for p in presets.split(",") if p.strip() in PRESETS]
+    painted = await _small(mask)
+    wanted = [p.strip() for p in presets.split(",") if p.strip() in PRESETS]
 
+    pipeline.queue(job_id)
     pool.submit(pipeline.run_finalise, job_id, draft_index, instruction, painted, wanted)
     return {"ok": True}
 
@@ -212,10 +230,11 @@ async def enhance(job_id: str,
     if action not in ("edit", "upscale"):
         raise HTTPException(400, "action must be 'edit' or 'upscale'.")
 
-    wanted = [p for p in presets.split(",") if p.strip() in PRESETS]
-    painted = await region.read() if region else None
+    wanted = [p.strip() for p in presets.split(",") if p.strip() in PRESETS]
+    painted = await _small(region)
 
     want_detail = None if detail == "" else detail.lower() in ("1", "true", "yes")
+    pipeline.queue(job_id)
     pool.submit(pipeline.run_enhance, job_id, instruction, action,
                 max(1.0, min(4.0, scale)), wanted, painted, want_detail,
                 source.strip() or None)
@@ -240,7 +259,8 @@ def use_as_is(job_id: str, draft_index: int = Form(...), presets: str = Form("")
     """Take a draft exactly as it is. No generation, no cost."""
     if not store.get(job_id):
         raise HTTPException(404, "No such run.")
-    wanted = [p for p in presets.split(",") if p.strip() in PRESETS]
+    wanted = [p.strip() for p in presets.split(",") if p.strip() in PRESETS]
+    pipeline.queue(job_id)
     pool.submit(pipeline.run_use_as_is, job_id, draft_index, wanted)
     return {"ok": True}
 
@@ -250,16 +270,20 @@ def redraft(job_id: str):
     """Another set of options from the same brief."""
     if not store.get(job_id):
         raise HTTPException(404, "No such run.")
+    pipeline.queue(job_id)
     pool.submit(pipeline.run_redraft, job_id)
     return {"ok": True}
 
 
 @app.post("/api/jobs/{job_id}/export")
 def export(job_id: str, presets: str = Form(...)):
-    wanted = [p for p in presets.split(",") if p.strip() in PRESETS]
+    if not store.get(job_id):
+        raise HTTPException(404, "No such run.")
+    wanted = [p.strip() for p in presets.split(",") if p.strip() in PRESETS]
     if not wanted:
         raise HTTPException(400, "No valid presets named.")
-    pool.submit(pipeline.export, job_id, wanted)
+    pipeline.queue(job_id)
+    pool.submit(pipeline.run_export, job_id, wanted)
     return {"ok": True}
 
 
@@ -276,9 +300,11 @@ def chat(job_id: str, message: str = Form(...)):
 
 
 @app.get("/api/jobs/{job_id}/file/{name}")
-def job_file(job_id: str, name: str, full: int = 0):
+def job_file(job_id: str, name: str, full: int = 0, w: int = 0):
     if "/" in name or "\\" in name or ".." in name:
         raise HTTPException(400, "Bad filename.")
+    if not pipeline.JOB_ID.match(job_id) or not store.get(job_id):
+        raise HTTPException(404, "No such run.")
     path = pipeline.job_dir(job_id) / name
     if not path.exists():
         raise HTTPException(404, "No such file.")
@@ -286,7 +312,14 @@ def job_file(job_id: str, name: str, full: int = 0):
     # full=1 is what the download button asks for. The image on screen is the
     # generator's own output; a listing wants a bigger file than that, and if
     # we do not enlarge it here the marketplace or the browser will, worse.
-    if full:
+    # w=<px> is what the page asks for when it only needs to show the image.
+    if w and not full and not name.startswith("export_") and name != "exports.zip":
+        try:
+            return FileResponse(pipeline.preview_copy(job_id, name, w))
+        except Exception:
+            pass
+
+    if full and not name.startswith("export_"):
         try:
             return FileResponse(pipeline.delivery_copy(job_id, name))
         except Exception:

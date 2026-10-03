@@ -66,6 +66,45 @@ def record(kind: str, model: str, units: int = 1, job_id: str | None = None) -> 
     return estimate
 
 
+def reserve(kind: str, model: str, units: int = 1,
+            job_id: str | None = None) -> list[int]:
+    """Check the cap and book the spend in one step, before the call is made.
+
+    Checking and recording separately let two workers both pass the check near
+    the ceiling and both spend; and a batch where one call failed recorded none
+    of the calls that had already been billed. Booking first closes both: the
+    rows exist while the call is in flight, and release() hands back only what
+    did not happen.
+    """
+    per_unit = config.COST_PER_IMAGE if kind == "image" else config.COST_PER_TEXT_CALL
+    ids = []
+    with _lock, _conn() as c:
+        if config.DAILY_CAP > 0:
+            total = float(c.execute(
+                "SELECT COALESCE(SUM(estimate), 0) FROM spend WHERE day = ?",
+                (_today(),)).fetchone()[0])
+            if total + per_unit * units > config.DAILY_CAP:
+                raise BudgetExceeded(
+                    f"Daily cap of ${config.DAILY_CAP:.2f} reached "
+                    f"(${total:.2f} estimated so far). It resets at 00:00 UTC. "
+                    f"Raise DAILY_CAP in .env if this is deliberate.")
+        for _ in range(units):
+            cur = c.execute(
+                "INSERT INTO spend (ts, day, kind, model, units, estimate, job_id) "
+                "VALUES (?,?,?,?,?,?,?)",
+                (time.time(), _today(), kind, model, 1, per_unit, job_id))
+            ids.append(cur.lastrowid)
+    return ids
+
+
+def release(ids: list[int]) -> None:
+    """Hand back reserved spend for calls that failed before being billed."""
+    if not ids:
+        return
+    with _lock, _conn() as c:
+        c.executemany("DELETE FROM spend WHERE id = ?", [(i,) for i in ids])
+
+
 def spent_today() -> float:
     with _lock, _conn() as c:
         row = c.execute(

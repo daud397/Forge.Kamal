@@ -253,11 +253,18 @@ async function sendToChat(text) {
   body.append("message", text);
 
   const pend = say("bot", "Working…", true);
-  const res = await fetch(`/api/jobs/${jobId}/chat`, { method: "POST", body });
-  const data = await res.json();
+  let reply;
+  try {
+    const res = await fetch(`/api/jobs/${jobId}/chat`, { method: "POST", body });
+    const data = await res.json().catch(() => ({}));
+    reply = res.ok ? data.reply
+                   : (data.detail || data.error || `That failed (${res.status}).`);
+  } catch (err) {
+    reply = "Couldn't reach the server. Try again in a moment.";
+  }
 
   pend.remove();
-  say("bot", data.reply);
+  say("bot", reply || "No reply.");
   lastRender = "";
   watch();
 }
@@ -286,11 +293,21 @@ function watch() {
 
 async function refresh() {
   if (!jobId) return;
-  const state = await (await fetch(`/api/jobs/${jobId}`)).json();
+  const res = await fetch(`/api/jobs/${jobId}`).catch(() => null);
+  if (!res) return;                          // network blip: try next tick
+  if (!res.ok) {
+    // 404 or signed out: stop polling instead of spinning on "Working…".
+    clearInterval(poll);
+    if (res.status === 401) location.href = "/login";
+    else status("That run is no longer available.");
+    return;
+  }
+  const state = await res.json();
 
   render(state);
 
-  if (["drafted", "finalised", "exported", "failed"].includes(state.stage)) {
+  if (!state.busy &&
+      ["drafted", "finalised", "exported", "failed"].includes(state.stage)) {
     clearInterval(poll);
     loadJobs();
   }
@@ -398,10 +415,10 @@ function imageCard(heading, items, state, cols, pickable) {
     b.className = "shot" + (pickable ? " pick" : "") +
       (state.chosen_draft === it.index ? " chosen" : "");
     b.innerHTML = `<span class="frame">
-        <img src="/api/jobs/${jobId}/file/${it.file}" alt="${esc(it.label)}">
+        <img src="${esc(fileUrl(it.file) + "?w=1024")}" alt="${esc(it.label)}">
       </span><span class="cap">${esc(it.label)}</span>`;
 
-    b.onclick = () => zoom(`/api/jobs/${jobId}/file/${it.file}`, {
+    b.onclick = () => zoom(fileUrl(it.file) + "?w=2048", {
       label: it.label,
       use: pickable ? () => choose(it.index, it.label) : null,
       asIs: pickable ? () => useAsIs(it.index, it.label) : null,
@@ -413,12 +430,15 @@ function imageCard(heading, items, state, cols, pickable) {
 }
 
 function finalCard(state) {
+  // Changes whenever the run does anything, so a re-finalised image is never
+  // served from the browser's cache under the same URL.
+  const ver = (state.log || []).length;
   const card = document.createElement("div");
   card.className = "card single";
   card.innerHTML = `
     <h3>Final image</h3>
     <div class="frame">
-      <img id="finalimg" src="/api/jobs/${jobId}/file/${state.final_file}?v=${(state.versions || []).length}" alt="Final image">
+      <img id="finalimg" src="${esc(fileUrl(state.final_file) + "?w=2048&v=" + ver)}" alt="Final image">
     </div>`;
 
   const qa = state.qa;
@@ -434,7 +454,7 @@ function finalCard(state) {
                     fail: "The model drifted", info: "Judge this by eye" };
     const v = document.createElement("p");
     v.className = "verdict";
-    v.innerHTML = `<span class="tag ${qa.level}">${words[qa.level] || qa.level}</span>`;
+    v.innerHTML = `<span class="tag ${esc(qa.level)}">${esc(words[qa.level] || qa.level)}</span>`;
     if (qa.notes && qa.notes[0]) {
       v.appendChild(document.createTextNode(" — " + qa.notes[0]));
     }
@@ -456,9 +476,9 @@ function finalCard(state) {
       const fig = document.createElement("button");
       fig.className = "input-thumb";
       fig.title = "Open " + file;
-      fig.innerHTML = `<img src="/api/jobs/${jobId}/file/${file}" alt="">
+      fig.innerHTML = `<img src="${esc(fileUrl(file) + "?w=512")}" alt="">
         <span>${i + 1}${role ? " · " + role : ""}</span>`;
-      fig.onclick = () => zoom(`/api/jobs/${jobId}/file/${file}`,
+      fig.onclick = () => zoom(fileUrl(file) + "?w=2048",
                                { label: `input ${i + 1}` });
       strip.appendChild(fig);
     });
@@ -496,21 +516,21 @@ function finalCard(state) {
 
   const dl = document.createElement("a");
   dl.className = "act primary";
-  dl.href = `/api/jobs/${jobId}/file/${state.final_file}?full=1`;
+  dl.href = fileUrl(state.final_file) + "?full=1&v=" + ver;
   dl.download = "";
   dl.textContent = "↓ Download full size";
-  dl.title = "Delivered at 3000px for marketplace listings";
+  dl.title = "Full resolution, lossless PNG, never smaller than 3000px";
   acts.appendChild(dl);
 
   add(acts, "Another set of options", moreOptions);
   add(acts, "Edit image", () =>
-    openEditor(`/api/jobs/${jobId}/file/${state.final_file}?v=${(state.versions || []).length}`));
+    openEditor(fileUrl(state.final_file) + "?w=2048&v=" + ver));
   add(acts, "Enlarge 2×", () => enhance("upscale"));
   add(acts, "Run again", repeat);
 
   (state.exports || []).forEach(e => {
     const a = document.createElement("a");
-    a.href = `/api/jobs/${jobId}/file/${e.file}?full=1`;
+    a.href = fileUrl(e.file) + "?v=" + ver;
     a.download = "";
     a.textContent = "↓ " + e.label;
     if (!e.generative_allowed) {
@@ -528,7 +548,7 @@ function finalCard(state) {
   $("thread").appendChild(card);
 
   card.querySelector("#finalimg").onclick = () =>
-    zoom(`/api/jobs/${jobId}/file/${state.final_file}?v=${(state.versions || []).length}`,
+    zoom(fileUrl(state.final_file) + "?w=2048&v=" + ver,
          { label: "Final image" });
 }
 
@@ -603,7 +623,8 @@ let lbUse = null, lbAsIs = null;
 function zoom(src, opts = {}) {
   $("lbimg").src = src;
   $("lblabel").textContent = opts.label || "";
-  $("lbdownload").href = src + (src.includes("?") ? "&" : "?") + "full=1";
+  // The screen shows a preview; the download is always the full file.
+  $("lbdownload").href = src.split("?")[0] + "?full=1";
   $("lbdownload").download = (opts.label || "image").replace(/[^a-z0-9]+/gi, "-").toLowerCase() + ".png";
 
   lbUse = opts.use || null;
@@ -641,14 +662,14 @@ async function loadJobs() {
 
   box.innerHTML = jobs.map(j => {
     const thumb = j.thumb
-      ? `<img class="run-thumb" src="/api/jobs/${j.id}/file/${j.thumb}" alt="">`
+      ? `<img class="run-thumb" src="${esc(fileUrl(j.thumb, j.id))}" alt="">`
       : `<span class="run-thumb blank">${j.stage === "failed" ? "—" : "…"}</span>`;
     const meta = j.stage === "failed"
       ? `<span class="bad" title="${esc(j.error || "")}">failed — ${esc(shortError(j.error))}</span>`
       : (j.exported ? `${j.exported} exported` : esc(j.stage));
     const mark = j.rating === "good" ? `<span class="run-mark good">✓</span>`
                : j.rating === "bad" ? `<span class="run-mark bad">✕</span>` : "";
-    return `<button class="run ${j.id === jobId ? "current" : ""}" data-id="${j.id}"
+    return `<button class="run ${j.id === jobId ? "current" : ""}" data-id="${esc(j.id)}"
                     data-thread="${esc(j.thread || "")}" title="${esc(j.product || "")}">
       ${thumb}
       <span class="run-text">
@@ -683,6 +704,11 @@ function drawSpend(spend) {
 
 async function refreshSpend() {
   try { drawSpend(await (await fetch("/api/spend")).json()); } catch { /* not critical */ }
+}
+
+// A job file's URL, with the name encoded: it can carry an uploaded filename.
+function fileUrl(file, id = jobId) {
+  return `/api/jobs/${encodeURIComponent(id)}/file/${encodeURIComponent(file)}`;
 }
 
 function esc(s) {

@@ -14,6 +14,7 @@ import hmac
 import os
 import secrets
 import time
+from html import escape as html_escape
 
 from fastapi import HTTPException, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
@@ -28,12 +29,16 @@ MAX_ATTEMPTS = 8
 WINDOW = 600
 
 
+_PROCESS_SECRET = secrets.token_hex(32)
+
+
 def _secret() -> bytes:
     key = os.getenv("SESSION_SECRET")
     if not key:
-        # Fine locally; on a server this means sessions die on every restart,
-        # which is why the deploy script generates one.
-        key = "dev-secret-not-for-production"
+        # A random per-process key, never a constant: a constant fallback let
+        # anyone who read this file sign their own cookie. The cost is that
+        # sessions die on every restart, which is why deploys should set one.
+        key = _PROCESS_SECRET
     return key.encode()
 
 
@@ -59,7 +64,7 @@ def _verify(token: str) -> bool:
         return False
 
     expected = hmac.new(_secret(), payload.encode(), hashlib.sha256).hexdigest()
-    if not hmac.compare_digest(mac, expected):
+    if not hmac.compare_digest(mac.encode(), expected.encode()):
         return False
     return time.time() < expires
 
@@ -75,6 +80,25 @@ def authorised(request: Request) -> bool:
     return bool(token and _verify(token))
 
 
+def client_ip(request: Request) -> str:
+    """The address to rate-limit, as seen past any proxies we sit behind.
+
+    On Railway every request arrives from Railway's edge proxy, so keying on
+    the socket address meant eight wrong guesses by anyone locked the whole
+    team out. TRUSTED_PROXY_HOPS says how many proxies append to
+    X-Forwarded-For in front of us (1 on Railway); the client is that many
+    entries from the right. Entries further left are whatever the client sent
+    and could be forged, so they are never used. 0 (the default, and right
+    behind the VPS's own Nginx, which uvicorn already trusts) uses the socket.
+    """
+    hops = int(os.getenv("TRUSTED_PROXY_HOPS", "0") or 0)
+    forwarded = [p.strip() for p in request.headers.get("x-forwarded-for", "").split(",")
+                 if p.strip()]
+    if hops > 0 and len(forwarded) >= hops:
+        return forwarded[-hops]
+    return request.client.host if request.client else "unknown"
+
+
 def check_rate(ip: str):
     now = time.time()
     recent = [t for t in _failures.get(ip, []) if now - t < WINDOW]
@@ -84,12 +108,17 @@ def check_rate(ip: str):
 
 
 def record_failure(ip: str):
-    _failures.setdefault(ip, []).append(time.time())
+    now = time.time()
+    # Drop addresses whose failures have all aged out, so the table can't grow
+    # without bound.
+    for stale in [k for k, v in _failures.items() if not v or now - v[-1] >= WINDOW]:
+        _failures.pop(stale, None)
+    _failures.setdefault(ip, []).append(now)
 
 
 def attempt(supplied: str, ip: str) -> bool:
     check_rate(ip)
-    if hmac.compare_digest(supplied, password() or ""):
+    if hmac.compare_digest(supplied.encode(), (password() or "").encode()):
         _failures.pop(ip, None)
         return True
     record_failure(ip)
@@ -132,7 +161,7 @@ button:hover{background:#1fb4dd}
 def login_page(error: str = "") -> HTMLResponse:
     import config
     html = LOGIN_PAGE.replace(
-        "__ERROR__", f'<p class="err">{error}</p>' if error else ""
+        "__ERROR__", f'<p class="err">{html_escape(str(error))}</p>' if error else ""
     ).replace("__BUILD__", config.BUILD)
     return HTMLResponse(html, status_code=401 if error else 200)
 

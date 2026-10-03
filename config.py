@@ -17,7 +17,7 @@ for d in (UPLOADS, RENDERS, DRAFTS, FINALS, EXPORTS):
 # Bump this whenever the code changes. /api/status reports it, so there is a
 # way to confirm which build is actually running rather than inferring it from
 # behaviour - which has already cost us a debugging session once.
-BUILD = "2026-09-22d"
+BUILD = "2026-10-03b"
 
 # --- Models -----------------------------------------------------------------
 REASONING_MODEL = os.getenv("REASONING_MODEL", "gpt-6-astra")
@@ -59,6 +59,21 @@ DRAFT_SIZE = (1024, 1024)
 _FINAL_EDGE = int(os.getenv("FINAL_EDGE", "1920"))
 FINAL_SIZE = (_FINAL_EDGE, _FINAL_EDGE)
 
+# The pixel budget for a final, whatever its shape. A 4:3 photo used to be
+# squashed into the 1920x1920 square and stretched back; now a final keeps the
+# shape of its source at this many pixels. FINAL_PIXELS=8294400 (the API's
+# ceiling, e.g. 2880x2880) buys more generated detail, but OpenAI marks
+# anything above 3,686,400 experimental.
+FINAL_PIXELS = min(int(os.getenv("FINAL_PIXELS", str(_FINAL_EDGE * _FINAL_EDGE))),
+                   8_294_400)
+
+# The longest edge of any image sent TO the model. The model cannot return
+# more than about 2-3K pixels, so a bigger input only makes the upload slower
+# and risks the API's file-size limit. This caps what is sent, never what is
+# kept: the full-resolution original stays on disk and is what the product
+# pixels are composited back from.
+MODEL_INPUT_MAX_EDGE = int(os.getenv("MODEL_INPUT_MAX_EDGE", "2048"))
+
 # What a download actually delivers. The generator's ceiling is FINAL_EDGE, so
 # the rest is Lanczos with a light sharpen - it does not invent detail, it
 # delivers a file big enough for a marketplace listing without the browser
@@ -66,12 +81,16 @@ FINAL_SIZE = (_FINAL_EDGE, _FINAL_EDGE)
 DELIVER_EDGE = int(os.getenv("DELIVER_EDGE", "3000"))
 
 # How much of an uploaded reference is kept. Every pixel thrown away here is
-# motif detail the transfer can never recover, and 2048 was throwing away most
-# of a modern phone photo.
-PHOTO_MAX_EDGE = int(os.getenv("PHOTO_MAX_EDGE", "3072"))
+# detail no later step can recover: 3072 shrank a 12MP phone photo (4032px) the
+# moment it arrived, and the delivered file could never be sharper than that.
+# The original is now kept up to this edge, and the model gets a smaller copy
+# (MODEL_INPUT_MAX_EDGE) while the full one is used for compositing and output.
+PHOTO_MAX_EDGE = int(os.getenv("PHOTO_MAX_EDGE", "8192"))
 
 # --- CAD rendering ----------------------------------------------------------
-RENDER_SIZE = int(os.getenv("RENDER_SIZE", "1024"))
+# 2048 costs about the same as 1024 on a dense mesh and doubles the product
+# detail a CAD job can deliver - the render is what gets composited back.
+RENDER_SIZE = int(os.getenv("RENDER_SIZE", "2048"))
 MAX_FACES = int(os.getenv("MAX_FACES", "80000"))
 
 # Default three-quarter view plus two alternates, as (azimuth, elevation) degrees.
@@ -84,6 +103,11 @@ CAMERA_ANGLES = {
 # Upscaling: a generative detail pass genuinely adds detail, but it is a
 # generative step and can change what it sharpens. Off means Lanczos only,
 # which enlarges honestly and invents nothing.
+# The largest edge an Enlarge produces. Lanczos is not bound by the model's
+# 3840px generation limit; that limit used to cap it, so "make it sharper" on a
+# 4032px phone photo shrank it to 3840.
+UPSCALE_MAX_EDGE = int(os.getenv("UPSCALE_MAX_EDGE", "8192"))
+
 UPSCALE_DETAIL_PASS = os.getenv("UPSCALE_DETAIL_PASS", "").lower() in ("1", "true", "yes")
 
 # The reviewer is a second vision call after every final image. It catches
@@ -112,4 +136,4 @@ COST_PER_TEXT_CALL = float(os.getenv("COST_PER_TEXT_CALL", "0.04"))
 DAILY_CAP = float(os.getenv("DAILY_CAP", "25"))
 
 CAD_EXTS = {".stl", ".obj", ".ply", ".glb", ".gltf", ".off", ".3mf", ".step", ".stp", ".iges", ".igs"}
-IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".webp", ".tif", ".tiff"}
+IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".webp", ".tif", ".tiff", ".heic", ".heif"}

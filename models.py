@@ -195,14 +195,21 @@ def _chat_json(system: str, user_parts: list, schema: dict | None, max_tokens: i
     else:
         kwargs["response_format"] = {"type": "json_object"}
 
-    budget.check_text()
+    booked = budget.reserve("text", config.REASONING_MODEL)
     try:
-        kwargs["reasoning_effort"] = config.REASONING_EFFORT
-        resp = client.chat.completions.create(**kwargs)
+        try:
+            kwargs["reasoning_effort"] = config.REASONING_EFFORT
+            resp = client.chat.completions.create(**kwargs)
+        except Exception as exc:
+            # Only a rejected parameter is worth a second call. A timeout or a
+            # rate limit may already have been billed and would just recur.
+            if "reasoning" not in str(exc).lower():
+                raise
+            kwargs.pop("reasoning_effort", None)
+            resp = client.chat.completions.create(**kwargs)
     except Exception:
-        kwargs.pop("reasoning_effort", None)
-        resp = client.chat.completions.create(**kwargs)
-    budget.record("text", config.REASONING_MODEL)
+        budget.release(booked)
+        raise
 
     text = resp.choices[0].message.content or "{}"
     text = text.strip().removeprefix("```json").removeprefix("```").removesuffix("```").strip()
@@ -310,10 +317,13 @@ def _as_files(images) -> list[tuple[str, bytes, str]]:
     """
     if not isinstance(images, (list, tuple)):
         images = [images]
+    from imaging import fit_within
     files = []
     for i, img in enumerate(images):
         buf = io.BytesIO()
-        img.convert("RGBA").save(buf, format="PNG")
+        # A capped copy: the full-resolution original stays on disk for the
+        # composite, and a 6000px PNG can exceed the API's upload limit.
+        fit_within(img.convert("RGBA"), config.MODEL_INPUT_MAX_EDGE).save(buf, format="PNG")
         files.append((f"image_{i + 1}.png", buf.getvalue(), "image/png"))
     return files
 
@@ -441,14 +451,23 @@ def _in_parallel(fn, prompts: list[str], model: str):
     """
     from concurrent.futures import ThreadPoolExecutor
 
-    budget.check_images(len(prompts))
+    booked = budget.reserve("image", model, len(prompts))
+
+    def guarded(prompt):
+        try:
+            return fn(prompt), None
+        except Exception as exc:
+            return None, exc
 
     with ThreadPoolExecutor(max_workers=min(len(prompts), 4)) as pool:
-        results = list(pool.map(fn, prompts))
+        outcomes = list(pool.map(guarded, prompts))
 
-    for _ in results:
-        budget.record("image", model)
-    return results
+    # Keep the booking for every call that came back; hand back the rest.
+    errors = [exc for _, exc in outcomes if exc is not None]
+    budget.release(booked[:len(errors)])
+    if errors:
+        raise errors[0]
+    return [result for result, _ in outcomes]
 
 
 def _decode(item) -> Image.Image:
@@ -501,8 +520,6 @@ def transfer_generate(sources: list[Image.Image], prompt: str,
 
     from imaging import size_string
     client = _client()
-    budget.check_images(1)
-
     kwargs = dict(
         model=config.FINAL_MODEL,
         image=_as_files(sources),
@@ -511,9 +528,17 @@ def transfer_generate(sources: list[Image.Image], prompt: str,
         quality=config.FINAL_QUALITY,
         output_format="png",
     )
-    result = _edit_with_fidelity(client, kwargs)
-    budget.record("image", config.FINAL_MODEL)
-    return _decode(result.data[0])
+    return _decode(_paid_edit(client, kwargs).data[0])
+
+
+def _paid_edit(client, kwargs):
+    """One final-model edit, booked against the cap before it is sent."""
+    booked = budget.reserve("image", kwargs["model"])
+    try:
+        return _edit_with_fidelity(client, kwargs)
+    except Exception:
+        budget.release(booked)
+        raise
 
 
 def _edit_with_fidelity(client, kwargs):
@@ -542,15 +567,18 @@ def final_edit(source, prompt: str, mask_png: bytes | None,
     if not live():
         return _mock_scene(source, prompt, size, refine=True)
 
-    from imaging import size_string
+    from imaging import fit_within, resize_rgba, size_string, snap_size
     client = _client()
 
+    # The canvas goes in at exactly the output size, so the mask lines up.
+    # Callers pick a size with the source's own shape (or pad the source to a
+    # requested one), so this resize scales and never stretches.
     buf = io.BytesIO()
-    source.convert("RGBA").resize(size, Image.LANCZOS).save(buf, format="PNG")
+    resize_rgba(source.convert("RGBA"), snap_size(*size)).save(buf, format="PNG")
     files = [("image_1.png", buf.getvalue(), "image/png")]
     for i, ref in enumerate(extra_refs or []):
         rb = io.BytesIO()
-        ref.convert("RGBA").save(rb, format="PNG")
+        fit_within(ref.convert("RGBA"), config.MODEL_INPUT_MAX_EDGE).save(rb, format="PNG")
         files.append((f"image_{i + 2}.png", rb.getvalue(), "image/png"))
 
     kwargs = dict(
@@ -564,10 +592,7 @@ def final_edit(source, prompt: str, mask_png: bytes | None,
     if mask_png:
         kwargs["mask"] = ("mask.png", mask_png, "image/png")
 
-    budget.check_images(1)
-    result = _edit_with_fidelity(client, kwargs)
-    budget.record("image", config.FINAL_MODEL)
-    return _decode(result.data[0])
+    return _decode(_paid_edit(client, kwargs).data[0])
 
 
 # --- Mock mode ---------------------------------------------------------------

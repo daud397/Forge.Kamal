@@ -23,6 +23,9 @@ COPY index.html styles.css app.js ./
 RUN mkdir -p /app/data
 
 ENV PORT=8000
+# Railway's edge proxy is the one hop in front of the container. Without this
+# the login rate limit sees every user as the proxy's address.
+ENV TRUSTED_PROXY_HOPS=1
 EXPOSE 8000
 
 # Shell form so $PORT expands.
