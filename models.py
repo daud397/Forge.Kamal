@@ -271,7 +271,7 @@ def generate_scratch(prompts: list[str], size: tuple[int, int] = None,
     dims = size_string(*size)
 
     def one(prompt):
-        result = client.images.generate(
+        kwargs = dict(
             model=config.DRAFT_MODEL,
             prompt=f"{compose_prompt(prompt, directive, brief, scratch=True)}\n\n"
                    "Commercial product photograph. No text, no logos, no "
@@ -280,6 +280,13 @@ def generate_scratch(prompts: list[str], size: tuple[int, int] = None,
             quality=config.DRAFT_QUALITY,
             output_format="png",
         )
+        try:
+            result = client.images.generate(**kwargs)
+        except Exception as exc:
+            if not _rejected_size(exc):
+                raise
+            w, h = _standard_size(dims)
+            result = client.images.generate(**dict(kwargs, size=f"{w}x{h}"))
         return prompt, _decode(result.data[0])
 
     return _in_parallel(one, prompts, config.DRAFT_MODEL)
@@ -541,11 +548,60 @@ def _paid_edit(client, kwargs):
         raise
 
 
+# Sizes every image model in this family accepts. Finals now ask for the
+# source's own shape (1648x2208 for a 3:4 photo); if a deployment only takes
+# the classic sizes, the call retries once at the closest of these rather than
+# failing the run. The composite and the download put the result back at full
+# resolution either way.
+STANDARD_SIZES = ((1024, 1024), (1536, 1024), (1024, 1536))
+
+
+def _rejected_size(exc: Exception) -> bool:
+    text = str(exc).lower()
+    return "size" in text and any(w in text for w in
+                                  ("invalid", "unsupported", "must be", "not supported"))
+
+
+def _standard_size(dims: str) -> tuple[int, int]:
+    w, h = (int(v) for v in dims.split("x"))
+    return min(STANDARD_SIZES, key=lambda s: abs((s[0] / s[1]) / (w / h) - 1))
+
+
+def _resize_png(blob: bytes, size: tuple[int, int]) -> bytes:
+    from imaging import resize_rgba
+    buf = io.BytesIO()
+    resize_rgba(Image.open(io.BytesIO(blob)).convert("RGBA"), size).save(buf, format="PNG")
+    return buf.getvalue()
+
+
+def _at_standard_size(kwargs: dict) -> dict:
+    """The same edit at a standard size. The canvas and the mask must match
+    the output size exactly, so both are resized with it; the references ride
+    along unchanged."""
+    size = _standard_size(kwargs["size"])
+    out = dict(kwargs, size=f"{size[0]}x{size[1]}")
+    if "mask" in kwargs and isinstance(kwargs.get("image"), list) and kwargs["image"]:
+        name, blob, mime = kwargs["image"][0]
+        out["image"] = [(name, _resize_png(blob, size), mime)] + kwargs["image"][1:]
+        mname, mblob, mmime = kwargs["mask"]
+        out["mask"] = (mname, _resize_png(mblob, size), mmime)
+    return out
+
+
 def _edit_with_fidelity(client, kwargs):
     """input_fidelity="high" tells the model to preserve fine detail from the
     input images - motif linework, exact colours - which is the whole point of
     a reference. Not every deployment accepts the parameter, so the call falls
     back to a plain edit rather than failing the run."""
+    try:
+        return _edit_once(client, kwargs)
+    except Exception as exc:
+        if not _rejected_size(exc) or "size" not in kwargs:
+            raise
+        return _edit_once(client, _at_standard_size(kwargs))
+
+
+def _edit_once(client, kwargs):
     try:
         return client.images.edit(**kwargs, input_fidelity="high")
     except Exception as exc:
