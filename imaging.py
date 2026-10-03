@@ -383,7 +383,8 @@ def snap_size(width: int, height: int) -> tuple[int, int]:
 
     long_e, short_e = max(w, h), min(w, h)
     if long_e / short_e > config.MAX_ASPECT:
-        short_e = snap(long_e / config.MAX_ASPECT)
+        short_e = min(config.MAX_EDGE, math.ceil(long_e / config.MAX_ASPECT / config.EDGE_MULTIPLE)
+                      * config.EDGE_MULTIPLE)
         w, h = (long_e, short_e) if w >= h else (short_e, long_e)
 
     total = w * h
@@ -398,6 +399,16 @@ def snap_size(width: int, height: int) -> tuple[int, int]:
         w = max(m, int(w * k) // m * m)
         h = max(m, int(h * k) // m * m)
 
+    # Last word on shape. Rounding to a multiple of 16 can leave a clamped
+    # 3:1 size at 3.02:1, which the API refuses outright - and now that
+    # generation follows the photo's own shape, every banner-shaped photo
+    # landed here. Widen the short edge until the ratio is legal.
+    m = config.EDGE_MULTIPLE
+    while max(w, h) / min(w, h) > config.MAX_ASPECT:
+        if w < h:
+            w += m
+        else:
+            h += m
     return w, h
 
 

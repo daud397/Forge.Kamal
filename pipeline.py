@@ -304,7 +304,10 @@ def gen_size(note: str, default: tuple[int, int], source: Image.Image | None = N
     pixels = pixels or default[0] * default[1]
     ratio = imaging.ratio_from_text(note)
     if ratio is None and source is not None:
-        ratio = source.width / source.height
+        # The API stops at 3:1. A banner-shaped photo is generated at 3:1 and
+        # finalise() extends the canvas, so nothing is squashed.
+        ratio = min(config.MAX_ASPECT, max(1 / config.MAX_ASPECT,
+                                           source.width / source.height))
     if ratio is None:
         return imaging.snap_size(*default)
     return imaging.size_for_ratio(ratio, pixels)
@@ -1300,7 +1303,13 @@ _pending: dict[str, int] = {}
 
 @contextmanager
 def working(job_id: str):
-    """Hold the run's lock for one piece of work, and count it off when done."""
+    """Hold the run's lock for one piece of work, and count it off when done.
+
+    Every caller queue()s first - the HTTP routes and agent._submit both do -
+    so each piece of work takes off exactly the one it added. A runner that
+    skipped queue() used to take off someone else's, and the page stopped
+    watching while a chat action was still waiting its turn.
+    """
     with job_lock(job_id):
         try:
             yield
