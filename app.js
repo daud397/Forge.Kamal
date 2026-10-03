@@ -253,11 +253,18 @@ async function sendToChat(text) {
   body.append("message", text);
 
   const pend = say("bot", "Working…", true);
-  const res = await fetch(`/api/jobs/${jobId}/chat`, { method: "POST", body });
-  const data = await res.json();
+  let reply;
+  try {
+    const res = await fetch(`/api/jobs/${jobId}/chat`, { method: "POST", body });
+    const data = await res.json().catch(() => ({}));
+    reply = res.ok ? data.reply
+                   : (data.detail || data.error || `That failed (${res.status}).`);
+  } catch (err) {
+    reply = "Couldn't reach the server. Try again in a moment.";
+  }
 
   pend.remove();
-  say("bot", data.reply);
+  say("bot", reply || "No reply.");
   lastRender = "";
   watch();
 }
@@ -286,7 +293,16 @@ function watch() {
 
 async function refresh() {
   if (!jobId) return;
-  const state = await (await fetch(`/api/jobs/${jobId}`)).json();
+  const res = await fetch(`/api/jobs/${jobId}`).catch(() => null);
+  if (!res) return;                          // network blip: try next tick
+  if (!res.ok) {
+    // 404 or signed out: stop polling instead of spinning on "Working…".
+    clearInterval(poll);
+    if (res.status === 401) location.href = "/login";
+    else status("That run is no longer available.");
+    return;
+  }
+  const state = await res.json();
 
   render(state);
 
@@ -398,7 +414,7 @@ function imageCard(heading, items, state, cols, pickable) {
     b.className = "shot" + (pickable ? " pick" : "") +
       (state.chosen_draft === it.index ? " chosen" : "");
     b.innerHTML = `<span class="frame">
-        <img src="/api/jobs/${jobId}/file/${it.file}" alt="${esc(it.label)}">
+        <img src="${esc(fileUrl(it.file))}" alt="${esc(it.label)}">
       </span><span class="cap">${esc(it.label)}</span>`;
 
     b.onclick = () => zoom(`/api/jobs/${jobId}/file/${it.file}`, {
@@ -434,7 +450,7 @@ function finalCard(state) {
                     fail: "The model drifted", info: "Judge this by eye" };
     const v = document.createElement("p");
     v.className = "verdict";
-    v.innerHTML = `<span class="tag ${qa.level}">${words[qa.level] || qa.level}</span>`;
+    v.innerHTML = `<span class="tag ${esc(qa.level)}">${esc(words[qa.level] || qa.level)}</span>`;
     if (qa.notes && qa.notes[0]) {
       v.appendChild(document.createTextNode(" — " + qa.notes[0]));
     }
@@ -456,7 +472,7 @@ function finalCard(state) {
       const fig = document.createElement("button");
       fig.className = "input-thumb";
       fig.title = "Open " + file;
-      fig.innerHTML = `<img src="/api/jobs/${jobId}/file/${file}" alt="">
+      fig.innerHTML = `<img src="${esc(fileUrl(file))}" alt="">
         <span>${i + 1}${role ? " · " + role : ""}</span>`;
       fig.onclick = () => zoom(`/api/jobs/${jobId}/file/${file}`,
                                { label: `input ${i + 1}` });
@@ -641,14 +657,14 @@ async function loadJobs() {
 
   box.innerHTML = jobs.map(j => {
     const thumb = j.thumb
-      ? `<img class="run-thumb" src="/api/jobs/${j.id}/file/${j.thumb}" alt="">`
+      ? `<img class="run-thumb" src="${esc(fileUrl(j.thumb, j.id))}" alt="">`
       : `<span class="run-thumb blank">${j.stage === "failed" ? "—" : "…"}</span>`;
     const meta = j.stage === "failed"
       ? `<span class="bad" title="${esc(j.error || "")}">failed — ${esc(shortError(j.error))}</span>`
       : (j.exported ? `${j.exported} exported` : esc(j.stage));
     const mark = j.rating === "good" ? `<span class="run-mark good">✓</span>`
                : j.rating === "bad" ? `<span class="run-mark bad">✕</span>` : "";
-    return `<button class="run ${j.id === jobId ? "current" : ""}" data-id="${j.id}"
+    return `<button class="run ${j.id === jobId ? "current" : ""}" data-id="${esc(j.id)}"
                     data-thread="${esc(j.thread || "")}" title="${esc(j.product || "")}">
       ${thumb}
       <span class="run-text">
@@ -683,6 +699,11 @@ function drawSpend(spend) {
 
 async function refreshSpend() {
   try { drawSpend(await (await fetch("/api/spend")).json()); } catch { /* not critical */ }
+}
+
+// A job file's URL, with the name encoded: it can carry an uploaded filename.
+function fileUrl(file, id = jobId) {
+  return `/api/jobs/${encodeURIComponent(id)}/file/${encodeURIComponent(file)}`;
 }
 
 function esc(s) {

@@ -19,13 +19,13 @@ upload ──► render CAD ──► Astra writes the brief ──► Flare dra
 ```bash
 pip install -r requirements.txt
 cp .env.example .env          # add your OPENAI_API_KEY
-./run.sh                      # http://127.0.0.1:8000
+uvicorn main:app --port 8000  # http://127.0.0.1:8000
 ```
 
 Try it without spending anything first:
 
 ```bash
-MOCK=1 ./run.sh
+MOCK=1 uvicorn main:app --port 8000
 ```
 
 Mock mode runs every stage with synthesised images and makes no API calls. The

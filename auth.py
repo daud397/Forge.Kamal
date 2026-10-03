@@ -14,6 +14,7 @@ import hmac
 import os
 import secrets
 import time
+from html import escape as html_escape
 
 from fastapi import HTTPException, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
@@ -28,12 +29,16 @@ MAX_ATTEMPTS = 8
 WINDOW = 600
 
 
+_PROCESS_SECRET = secrets.token_hex(32)
+
+
 def _secret() -> bytes:
     key = os.getenv("SESSION_SECRET")
     if not key:
-        # Fine locally; on a server this means sessions die on every restart,
-        # which is why the deploy script generates one.
-        key = "dev-secret-not-for-production"
+        # A random per-process key, never a constant: a constant fallback let
+        # anyone who read this file sign their own cookie. The cost is that
+        # sessions die on every restart, which is why deploys should set one.
+        key = _PROCESS_SECRET
     return key.encode()
 
 
@@ -59,7 +64,7 @@ def _verify(token: str) -> bool:
         return False
 
     expected = hmac.new(_secret(), payload.encode(), hashlib.sha256).hexdigest()
-    if not hmac.compare_digest(mac, expected):
+    if not hmac.compare_digest(mac.encode(), expected.encode()):
         return False
     return time.time() < expires
 
@@ -84,12 +89,17 @@ def check_rate(ip: str):
 
 
 def record_failure(ip: str):
-    _failures.setdefault(ip, []).append(time.time())
+    now = time.time()
+    # Drop addresses whose failures have all aged out, so the table can't grow
+    # without bound.
+    for stale in [k for k, v in _failures.items() if not v or now - v[-1] >= WINDOW]:
+        _failures.pop(stale, None)
+    _failures.setdefault(ip, []).append(now)
 
 
 def attempt(supplied: str, ip: str) -> bool:
     check_rate(ip)
-    if hmac.compare_digest(supplied, password() or ""):
+    if hmac.compare_digest(supplied.encode(), (password() or "").encode()):
         _failures.pop(ip, None)
         return True
     record_failure(ip)
@@ -132,7 +142,7 @@ button:hover{background:#1fb4dd}
 def login_page(error: str = "") -> HTMLResponse:
     import config
     html = LOGIN_PAGE.replace(
-        "__ERROR__", f'<p class="err">{error}</p>' if error else ""
+        "__ERROR__", f'<p class="err">{html_escape(str(error))}</p>' if error else ""
     ).replace("__BUILD__", config.BUILD)
     return HTMLResponse(html, status_code=401 if error else 200)
 

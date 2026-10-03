@@ -8,3 +8,4 @@ scipy>=1.11
 trimesh>=4.0
 # Optional: STEP/IGES support via OpenCascade
 # cascadio>=0.0.9
+fast-simplification>=0.1

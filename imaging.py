@@ -9,7 +9,7 @@ import io
 import math
 
 import numpy as np
-from PIL import Image, ImageFilter
+from PIL import Image, ImageFilter, ImageOps
 from scipy.ndimage import uniform_filter, binary_dilation
 
 import config
@@ -117,6 +117,35 @@ def ssim(a: np.ndarray, b: np.ndarray, mask: np.ndarray | None = None, win: int 
     return float(smap.mean())
 
 
+# --- Opening uploads ---------------------------------------------------------
+
+# Refuse decompression bombs well before they fill the container's memory.
+Image.MAX_IMAGE_PIXELS = 120_000_000
+
+
+def open_upload(path) -> Image.Image:
+    """Open a seller's file the way their phone and browser show it.
+
+    Two things a bare convert("RGBA") gets wrong: EXIF rotation (portrait phone
+    photos came out sideways, and a painted mask no longer lined up), and
+    high-bit-depth files (a 16-bit PNG clipped almost entirely to white, a
+    float TIFF went black).
+    """
+    img = Image.open(path)
+    img = ImageOps.exif_transpose(img) or img
+    if img.mode in ("I;16", "I;16B", "I;16L", "I", "F"):
+        arr = np.asarray(img, dtype=np.float64)
+        top = float(arr.max()) if arr.size else 0.0
+        if img.mode == "F" and top <= 1.0:
+            scale = 255.0
+        elif top <= 255:
+            scale = 1.0
+        else:
+            scale = 255.0 / (65535.0 if top <= 65535 else top)
+        img = Image.fromarray(np.clip(arr * scale, 0, 255).astype(np.uint8), "L")
+    return img.convert("RGBA")
+
+
 # --- Masks -------------------------------------------------------------------
 
 def resize_rgba(img: Image.Image, size: tuple[int, int],
@@ -128,6 +157,11 @@ def resize_rgba(img: Image.Image, size: tuple[int, int],
     the product lands on a light background. Premultiplying by alpha first, then
     dividing back out, keeps the edge colour honest.
     """
+    if img.width * img.height > 8_000_000:
+        # A 48MP phone photo in float64 peaked near 4GB here. Pillow's own
+        # premultiplied mode does the same job in 8 bits.
+        return img.convert("RGBA").convert("RGBa").resize(size, resample).convert("RGBA")
+
     arr = np.asarray(img.convert("RGBA"), dtype=np.float64) / 255.0
     alpha = arr[..., 3:4]
 

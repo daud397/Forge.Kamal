@@ -12,7 +12,7 @@ from __future__ import annotations
 import json
 import re
 
-import config, models, pipeline, store
+import budget, config, models, pipeline, store
 from presets import PRESETS
 
 MAX_HISTORY = 16   # turns kept in context; the job state carries the rest
@@ -312,7 +312,7 @@ def _run_set_scenes(job_id: str, args: dict, pool) -> str:
     store.update(job_id, brief=brief)
     store.log(job_id, f"Scenes replaced from chat: {', '.join(s['label'] for s in scenes)}.")
 
-    pool.submit(_guarded, job_id, pipeline.drafts_for_mode, job_id)
+    _submit(pool, job_id, pipeline.drafts_for_mode, job_id)
     noun = "draft" if len(scenes) == 1 else "drafts"
     return f"Generating {len(scenes)} new {noun}: {', '.join(s['label'] for s in scenes)}."
 
@@ -322,11 +322,13 @@ def _run_choose_draft(job_id: str, args: dict, pool) -> str:
     drafts = state.get("drafts") or []
     idx = int(args["index"])
     if not any(d["index"] == idx for d in drafts):
+        if not drafts:
+            return "This run has no drafts to choose from."
         return f"There's no draft {idx + 1}. Available: 1 to {len(drafts)}."
 
     label = next(d["label"] for d in drafts if d["index"] == idx)
     instruction = args.get("instruction", "")
-    pool.submit(_guarded, job_id, pipeline.finalise, job_id, idx, instruction, None)
+    _submit(pool, job_id, pipeline.finalise, job_id, idx, instruction, None)
     extra = f" with '{instruction}'" if instruction else ""
     return f"Running the final masked edit on {label}{extra}."
 
@@ -338,7 +340,7 @@ def _run_revise_final(job_id: str, args: dict, pool) -> str:
         return "Nothing has been finalised yet, so there's nothing to revise. Pick a draft first."
 
     instruction = args["instruction"]
-    pool.submit(_guarded, job_id, pipeline.finalise, job_id, idx, instruction, None)
+    _submit(pool, job_id, pipeline.finalise, job_id, idx, instruction, None)
     return f"Re-running the final edit: {instruction}"
 
 
@@ -351,7 +353,7 @@ def _run_export(job_id: str, args: dict, pool) -> str:
     if not state.get("final_file"):
         return "There's no final image yet. Pick a draft and I'll run the edit first."
 
-    pool.submit(_guarded, job_id, pipeline.export, job_id, wanted)
+    _submit(pool, job_id, pipeline.export, job_id, wanted)
     labels = [PRESETS[p]["label"] for p in wanted]
 
     warning = ""
@@ -368,7 +370,7 @@ def _run_change_image(job_id: str, args: dict, pool) -> str:
     if not pipeline.current_image(job_id):
         return "There's no image to work on yet. Start a run first."
 
-    pool.submit(_guarded, job_id, pipeline.enhance, job_id, instruction, "edit", 2.0)
+    _submit(pool, job_id, pipeline.enhance, job_id, instruction, "edit", 2.0)
     return (f"Editing the current image: {instruction}\n"
             "Nothing is masked on this path, so the product can change too. "
             "Worth checking against the real thing when it lands.")
@@ -379,7 +381,7 @@ def _run_upscale(job_id: str, args: dict, pool) -> str:
     if not pipeline.current_image(job_id):
         return "There's no image to enlarge yet."
 
-    pool.submit(_guarded, job_id, pipeline.enhance, job_id, "", "upscale", scale)
+    _submit(pool, job_id, pipeline.enhance, job_id, "", "upscale", scale)
     return (f"Enlarging {scale:g}x. Resizing makes the file bigger but cannot "
             "recover detail that was never in the original.")
 
@@ -389,7 +391,7 @@ def _run_repeat(job_id: str, args: dict, pool) -> str:
     new_id = store.create({"created_at": None,
                            "mode": prior.get("mode", "edit"),
                            "thread": prior.get("thread") or job_id})
-    pool.submit(_guarded, new_id, pipeline.rerun, job_id, new_id)
+    _submit(pool, new_id, pipeline.rerun, job_id, new_id)
     return "Running it again from the same inputs. This one stays in the history."
 
 
@@ -401,13 +403,13 @@ def _run_use_as_is(job_id: str, args: dict, pool) -> str:
         return f"There's no option {idx + 1}. There are {len(drafts)}."
 
     label = next(d["label"] for d in drafts if d["index"] == idx)
-    pool.submit(_guarded, job_id, pipeline.use_as_is, job_id, idx)
+    _submit(pool, job_id, pipeline.use_as_is, job_id, idx)
     return (f"Taking {label} exactly as it is. No generation, so it costs "
             "nothing and stays precisely the image you picked.")
 
 
 def _run_more_options(job_id: str, args: dict, pool) -> str:
-    pool.submit(_guarded, job_id, pipeline.redraft, job_id)
+    _submit(pool, job_id, pipeline.redraft, job_id)
     return "Generating another set from the same brief."
 
 
@@ -422,6 +424,11 @@ HANDLERS = {
     "revise_final": _run_revise_final,
     "export": _run_export,
 }
+
+
+def _submit(pool, job_id, fn, *args):
+    pipeline.queue(job_id)
+    pool.submit(_guarded, job_id, fn, *args)
 
 
 def _guarded(job_id, fn, *args):
@@ -485,9 +492,13 @@ def _live_turn(job_id, message, history, state, pool):
 
     resp = None
     last = None
+    # Chat is a paid call like any other, so it sits under the daily cap and
+    # shows up in usage.
+    budget.check_text()
     for attempt in attempts:
         try:
             resp = client.chat.completions.create(**attempt)
+            budget.record("text", config.REASONING_MODEL, job_id=job_id)
             break
         except Exception as exc:
             last = exc
@@ -558,6 +569,13 @@ def _offline_turn(job_id, message, state, pool):
                     idx = d["index"]
                     break
 
+    as_is = any(w in text for w in ("as is", "as-is", "keep it", "good enough",
+                                    "that one is fine", "fine as", "no changes"))
+
+    # "use option 2 as is" names a draft too; it must not buy a final edit.
+    if idx is not None and as_is:
+        return _run_use_as_is(job_id, {"index": idx}, pool), ["use_as_is"]
+
     if idx is not None:
         return _run_choose_draft(job_id, {"index": idx, "instruction": ""}, pool), ["choose_draft"]
 
@@ -567,6 +585,11 @@ def _offline_turn(job_id, message, state, pool):
         import re as _re
         m3 = _re.search(r"\b(\d)\b", text)
         return _run_use_as_is(job_id, {"index": int(m3.group(1)) - 1 if m3 else 0}, pool), ["use_as_is"]
+
+    # Again from the same inputs?
+    if any(w in text for w in ("run it again", "again from scratch", "rerun",
+                               "re-run", "start over")):
+        return _run_repeat(job_id, {}, pool), ["repeat"]
 
     # Not these?
     if any(w in text for w in ("more options", "other options", "none of these",
@@ -610,9 +633,10 @@ def _offline_turn(job_id, message, state, pool):
             s = qa.get("stats", {})
             return (f"Verdict {qa.get('level')}. The model's raw output drifted "
                     f"{s.get('delta_e_mean')} dE2000 with SSIM {s.get('ssim_product')}. "
-                    f"After compositing the residual is "
-                    f"{qa.get('residual', {}).get('delta_e_mean')} dE, so the delivered "
-                    "image is clean."), []
+                    + (f"After compositing the residual is "
+                       f"{qa['residual'].get('delta_e_mean')} dE, so the delivered "
+                       "image is clean." if (qa.get("residual") or {}).get("delta_e_mean")
+                       is not None else "There was no composite step on this one.")), []
         return "No quality check has run yet.", []
 
     return (f"Mock mode has no model behind the chat, so it only understands direct "

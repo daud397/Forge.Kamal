@@ -56,7 +56,14 @@ def load_mesh(path: Path):
         raise CADError(f"{path.name} has no triangles. Point clouds are not supported.")
 
     if len(loaded.faces) > config.MAX_FACES:
-        loaded = loaded.simplify_quadric_decimation(config.MAX_FACES)
+        # face_count by keyword: the first positional argument is a 0-1
+        # reduction fraction in trimesh 4+, so passing 80000 there failed every
+        # dense mesh. If decimation is unavailable, render the full mesh rather
+        # than failing the run - slower, never wrong.
+        try:
+            loaded = loaded.simplify_quadric_decimation(face_count=config.MAX_FACES)
+        except Exception:
+            pass
 
     return loaded
 
@@ -129,12 +136,17 @@ def render(
         area2 = -area2
         tri = tri[:, ::-1, :]
         tri_depth = tri_depth[:, ::-1]
+        flipped = True
+    else:
+        flipped = False
 
     tri, tri_depth, area2 = tri[front], tri_depth[front], area2[front]
     if len(tri) == 0:
         raise CADError("Nothing visible from this camera angle.")
 
     normals = np.asarray(mesh.face_normals, dtype=np.float64)[front] @ rot.T
+    if flipped:
+        normals = -normals                             # light the side we see
 
     key = np.array([-0.45, 0.75, 0.50]); key /= np.linalg.norm(key)
     fill = np.array([0.80, 0.15, 0.45]); fill /= np.linalg.norm(fill)
@@ -218,8 +230,13 @@ def render_angles(path: Path, job_dir: Path) -> dict[str, str]:
     mesh = load_mesh(path)
     out: dict[str, str] = {}
     for name, (az, el) in config.CAMERA_ANGLES.items():
-        img = render(mesh, azimuth=az, elevation=el)
+        try:
+            img = render(mesh, azimuth=az, elevation=el)
+        except CADError:
+            continue                    # e.g. a flat part seen edge-on
         dest = job_dir / f"render_{name}.png"
         img.save(dest)
         out[name] = dest.name
+    if not out:
+        raise CADError(f"{path.name} is not visible from any camera angle.")
     return out

@@ -24,7 +24,14 @@ from presets import preset
 PHOTO_MAX_EDGE = config.PHOTO_MAX_EDGE
 
 
+JOB_ID = re.compile(r"^[0-9a-f]{12}$")
+
+
 def job_dir(job_id: str) -> Path:
+    # job_id arrives straight from the URL. Without this, "/api/jobs/../file/
+    # forge.db" resolved to data/forge.db and handed out the whole database.
+    if not JOB_ID.match(job_id or ""):
+        raise ValueError("Bad run id.")
     d = config.DATA / "jobs" / job_id
     d.mkdir(parents=True, exist_ok=True)
     return d
@@ -75,7 +82,12 @@ def ingest(job_id: str, uploads: list[tuple[str, bytes]], note: str = "") -> dic
         suffix = Path(filename).suffix.lower()
         # The index prefix matters: two attachments called "image.png" used to
         # overwrite each other, leaving one photo where the seller sent two.
-        dest = d / f"src_{i + 1}_{Path(filename).name}"
+        # The name ends up in URLs and in the page, so keep it plain: an
+        # uploaded 'x" onerror="...' name was script in a teammate's browser,
+        # and any ".." made the file undownloadable.
+        safe = re.sub(r"[^\w.-]", "_", Path(filename).name)
+        safe = re.sub(r"\.{2,}", ".", safe).lstrip(".") or "upload"
+        dest = d / f"src_{i + 1}_{safe}"
         dest.write_bytes(blob)
         if suffix in config.CAD_EXTS:
             cad_files.append(dest)
@@ -97,7 +109,7 @@ def ingest(job_id: str, uploads: list[tuple[str, bytes]], note: str = "") -> dic
 
     photo_names = []
     for path in photos:
-        img = Image.open(path).convert("RGBA")
+        img = imaging.open_upload(path)
 
         # A phone photo can be 4000px on the long edge. The final pass renders
         # at 1536 and the composite happens there, so anything beyond about
@@ -787,8 +799,10 @@ def _upscale(job_id: str, source: Image.Image, scale: float,
     the image is a real photograph of a real product.
     """
     w, h = source.size
-    target = (min(config.MAX_EDGE, int(w * scale)),
-              min(config.MAX_EDGE, int(h * scale)))
+    # One factor for both edges. Clamping each edge separately changed the
+    # aspect, and fit="contain" then padded the difference with white bars.
+    k = min(scale, config.MAX_EDGE / max(w, h))
+    target = (max(1, int(w * k)), max(1, int(h * k)))
 
     if config.UPSCALE_DETAIL_PASS if detail is None else detail:
         gen_w, gen_h = imaging.snap_size(*target)
@@ -824,16 +838,30 @@ def rerun(job_id: str, new_job_id: str) -> dict:
 
     src_dir = job_dir(job_id)
     job_dir(new_job_id)                       # create the destination up front
+    # Attachment order drives a transfer, and a plain sort puts src_10 before
+    # src_2, so sort on the index ingest() wrote rather than on the name.
+    def order(path: Path) -> int:
+        idx = path.name.split("_", 2)[1]
+        return int(idx) if idx.isdigit() else 0
+
     uploads = []
-    for path in sorted(src_dir.glob("src_*")):
-        uploads.append((path.name.replace("src_", "", 1), path.read_bytes()))
+    for path in sorted(src_dir.glob("src_*"), key=order):
+        original = path.name.split("_", 2)[2] if path.name.count("_") >= 2 else path.name
+        uploads.append((original, path.read_bytes()))
 
     store.log(new_job_id, f"Repeating run {job_id}.")
 
     if uploads:
-        ingest(new_job_id, uploads, old.get("note", ""))
-        analyse(new_job_id)
-        return drafts(new_job_id)
+        note = old.get("note", "")
+        ingest(new_job_id, uploads, note)
+        carried = src_dir / "photo_carried_target.png"
+        if carried.exists():
+            shutil.copyfile(carried, job_dir(new_job_id) / carried.name)
+            photos = store.get(new_job_id).get("photos") or []
+            store.update(new_job_id, photos=photos + [carried.name],
+                         roles=old.get("roles") or {"design": 0, "target": 1})
+        route(new_job_id, note)
+        return store.get(new_job_id)
 
     # A described run has no files, so repeat the description instead.
     description = old.get("note") or (old.get("brief") or {}).get("product_name")
@@ -931,12 +959,20 @@ def intent_of(note: str) -> str:
 # back-reference, reuse the last real instruction, and carry the bed from that
 # run forward as the target so the new attachment has something to be applied to.
 
+# Only the bare back-reference ("same", "do it again", "this one too"). The
+# old pattern allowed forty trailing characters, so a fresh instruction such as
+# "make it brighter" or "apply this design to a dressed bed" was mistaken for a
+# follow-up and silently replaced by the previous run's note.
 BACKREF = re.compile(
     r"^\W*(now\s+)?(please\s+)?(do|make|try|apply|repeat)?\s*"
-    r"(the\s+)?(same|this|it)\b[^.]{0,40}$", re.I)
+    r"(the\s+)?(same|this|it)"
+    r"(\s+(one|image|design|pic|picture|photo|too|again|please|now|as well|"
+    r"here|also|for this|for this one|with this|with this one))*\W*$", re.I)
+# "repeat" on its own is not here: "pattern repeat" is everyday mill language.
 BACKREF_WORDS = ("same as above", "same as before", "same thing", "do the same",
-                 "with this one", "with this image", "repeat", "as previous",
-                 "like before", "like the last one", "same prompt")
+                 "with this one", "with this image", "repeat that", "repeat it",
+                 "repeat the last", "as previous", "like before",
+                 "like the last one", "same prompt")
 
 
 def is_backref(note: str) -> bool:
@@ -964,7 +1000,13 @@ def carry_target(job_id: str, prior: dict) -> None:
     prior_photos = prior.get("photos") or []
     if not prior_photos:
         return
-    _, prior_target = transfer_roles(prior.get("note", ""), len(prior_photos))
+    # A run that was itself a follow-up has its roles pinned; re-reading its
+    # reused note would pick the wrong image as the bed.
+    pinned = prior.get("roles") or {}
+    if "target" in pinned and int(pinned["target"]) < len(prior_photos):
+        prior_target = int(pinned["target"])
+    else:
+        _, prior_target = transfer_roles(prior.get("note", ""), len(prior_photos))
     src = job_dir(prior["id"]) / prior_photos[prior_target]
     if not src.exists():
         return
@@ -1008,6 +1050,50 @@ def previous_run(thread: str = "", exclude: str = "") -> dict | None:
 
 # --- Runner ------------------------------------------------------------------
 
+def route(job_id: str, note: str) -> None:
+    """Do what the note asked for with the photos this run has ingested.
+
+    Shared by a fresh run and a repeat, so "run it again" on a transfer or a
+    direct edit repeats that, rather than falling back to scene drafts.
+    """
+    photos = store.get(job_id).get("photos") or []
+
+    # Two or more photographs means the seller is talking about "the first
+    # image" and "the second image", and only transfer() understands that.
+    # This decision comes first: the keyword router below reads one sentence
+    # and one photo, so a two-image job that happened to contain the word
+    # "change" or "quality" used to be routed to a single-image edit or an
+    # upscale, silently dropping image 2. That was the whole bug.
+    if len(photos) > 1:
+        store.log(job_id, f"{len(photos)} images attached, so this is a "
+                          "design transfer, not a scene: one final-quality "
+                          "image, your words and your attachment order "
+                          "driving it.")
+        store.update(job_id, intent="transfer")
+        transfer(job_id)
+        return
+
+    kind = intent_of(note)
+
+    if kind == "upscale":
+        store.log(job_id, "You asked for resolution, so this goes straight to "
+                          "a detail pass and enlargement - no scenes.")
+        store.update(job_id, intent="upscale")
+        enhance(job_id, "", "upscale", 2.0, detail=True)
+        return
+
+    if kind == "edit":
+        store.log(job_id, "You asked for a change, so this edits the photo "
+                          "directly - no scenes.")
+        store.update(job_id, intent="edit")
+        enhance(job_id, note, "edit", 2.0)
+        return
+
+    store.update(job_id, intent="scene")
+    analyse(job_id)
+    drafts(job_id)
+
+
 def run_auto(job_id: str, uploads: list[tuple[str, bytes]], note: str):
     """Ingest, then do what the note asked for.
 
@@ -1031,42 +1117,7 @@ def run_auto(job_id: str, uploads: list[tuple[str, bytes]], note: str):
         if follow_on:
             carry_target(job_id, follow_on)
 
-        photos = store.get(job_id).get("photos") or []
-
-        # Two or more photographs means the seller is talking about "the first
-        # image" and "the second image", and only transfer() understands that.
-        # This decision comes first: the keyword router below reads one sentence
-        # and one photo, so a two-image job that happened to contain the word
-        # "change" or "quality" used to be routed to a single-image edit or an
-        # upscale, silently dropping image 2. That was the whole bug.
-        if len(photos) > 1:
-            store.log(job_id, f"{len(photos)} images attached, so this is a "
-                              "design transfer, not a scene: one final-quality "
-                              "image, your words and your attachment order "
-                              "driving it.")
-            store.update(job_id, intent="transfer")
-            transfer(job_id)
-            return
-
-        kind = intent_of(note)
-
-        if kind == "upscale":
-            store.log(job_id, "You asked for resolution, so this goes straight to "
-                              "a detail pass and enlargement - no scenes.")
-            store.update(job_id, intent="upscale")
-            enhance(job_id, "", "upscale", 2.0, detail=True)
-            return
-
-        if kind == "edit":
-            store.log(job_id, "You asked for a change, so this edits the photo "
-                              "directly - no scenes.")
-            store.update(job_id, intent="edit")
-            enhance(job_id, note, "edit", 2.0)
-            return
-
-        store.update(job_id, intent="scene")
-        analyse(job_id)
-        drafts(job_id)
+        route(job_id, note)
     except Exception as exc:
         store.log(job_id, f"{type(exc).__name__}: {exc}", "error")
         store.log(job_id, traceback.format_exc(limit=3), "error")
@@ -1121,6 +1172,24 @@ def run_rerun(job_id: str, new_job_id: str):
     except Exception as exc:
         store.log(new_job_id, f"{type(exc).__name__}: {exc}", "error")
         store.update(new_job_id, stage="failed", error=str(exc))
+
+
+def queue(job_id: str) -> None:
+    """Mark a run busy the moment work is handed to the pool.
+
+    Without it the browser polls, still sees the previous "finalised" or
+    "drafted", decides the job is done and stops watching before the worker
+    has even started.
+    """
+    store.update(job_id, stage="queued", error=None)
+
+
+def run_export(job_id: str, presets_wanted: list[str]):
+    try:
+        export(job_id, presets_wanted)
+    except Exception as exc:
+        store.log(job_id, f"{type(exc).__name__}: {exc}", "error")
+        store.update(job_id, stage="failed", error=str(exc))
 
 
 def run_finalise(job_id: str, draft_index: int, instruction: str,
