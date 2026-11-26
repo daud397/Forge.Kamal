@@ -92,6 +92,10 @@ def in_thread(thread: str, limit: int = 40) -> list[dict]:
 
 
 def log(job_id: str, message: str, level: str = "info"):
+    # Warnings and errors also go to stdout, so they show in the host's logs
+    # (Railway) and a failed run can be diagnosed without the database.
+    if level in ("warn", "error"):
+        print(f"[run {job_id}] {level.upper()}: {message[:2000]}", flush=True)
     with _lock, _conn() as c:
         row = c.execute("SELECT state FROM jobs WHERE id=?", (job_id,)).fetchone()
         if not row:

@@ -512,6 +512,8 @@ function finalCard(state) {
       <img id="finalimg" src="${esc(fileUrl(state.final_file) + "?w=2048&v=" + ver)}" alt="Final image">
     </div>`;
 
+  compareStrip(card, state, ver);
+
   const qa = state.qa;
   if (state.used_as_is) {
     const n = document.createElement("p");
@@ -968,4 +970,66 @@ async function applyEdit() {
   say("user", (region ? "Edit the painted area: " : "Edit: ") + text);
   lastRender = "";
   watch();
+}
+
+
+// ---------------------------------------------------------------- before / after
+
+/* Side by side, so a change can be judged without flipping between images:
+   the image a step started from on the left, the result on the right. With
+   several steps, the left side can also show the very first version. */
+function compareStrip(card, state, ver) {
+  const versions = state.versions || [];
+  const pairs = [];
+  if (versions.length) {
+    const last = versions[versions.length - 1];
+    if (last.before) pairs.push({ key: "prev", tab: "Previous step", file: last.before,
+      label: "Before", size: last.before_size, after: `After · ${last.instruction}` });
+    const first = versions[0];
+    if (versions.length > 1 && first.before) pairs.push({ key: "first", tab: "First version",
+      file: first.before, label: "First version", size: first.before_size,
+      after: `Now · ${versions.length} changes` });
+  } else if (state.chosen_draft != null && !state.used_as_is) {
+    const d = (state.drafts || []).find(x => x.index === state.chosen_draft);
+    if (d) pairs.push({ key: "draft", tab: "Draft", file: d.file,
+      label: `Draft · ${d.label}`, after: "Final" });
+  }
+  if (!pairs.length) return;
+
+  const box = document.createElement("div");
+  box.className = "compare";
+  const head = document.createElement("div");
+  head.className = "compare-head";
+  head.innerHTML = `<span>Compare</span>`;
+  const sw = document.createElement("div");
+  sw.className = "compare-tabs";
+  head.appendChild(sw);
+  const grid = document.createElement("div");
+  grid.className = "compare-grid";
+  box.appendChild(head);
+  box.appendChild(grid);
+
+  const show = (pr) => {
+    sw.querySelectorAll("button").forEach(b => b.classList.toggle("on", b.dataset.k === pr.key));
+    const afterSize = versions.length ? versions[versions.length - 1].size : "";
+    grid.innerHTML = "";
+    [[pr.file, pr.label + (pr.size ? " · " + pr.size : "")],
+     [state.final_file, pr.after + (afterSize ? " · " + afterSize : "")]].forEach(([file, cap], i) => {
+      const fig = document.createElement("button");
+      fig.className = "compare-side";
+      const src = fileUrl(file) + "?w=1024&v=" + ver;
+      fig.innerHTML = `<span class="compare-frame"><img src="${esc(src)}" alt=""></span>
+        <span class="compare-cap ${i ? "after" : ""}">${esc(cap)}</span>`;
+      fig.onclick = () => zoom(fileUrl(file) + "?w=2048&v=" + ver, { label: cap });
+      grid.appendChild(fig);
+    });
+  };
+  if (pairs.length > 1) pairs.forEach(pr => {
+    const b = document.createElement("button");
+    b.textContent = pr.tab; b.dataset.k = pr.key;
+    b.onclick = () => show(pr);
+    sw.appendChild(b);
+  });
+  show(pairs[0]);
+  card.appendChild(box);
 }

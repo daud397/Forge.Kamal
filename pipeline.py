@@ -859,9 +859,21 @@ def enhance(job_id: str, instruction: str, action: str = "edit",
     else:
         result = _edit_freely(job_id, source, instruction)
 
+    # Keep what this step started from, so the page can show before and after
+    # side by side. final_composited.png is overwritten below, so the very
+    # first image is copied out as v0.png before that happens.
+    before = source_name
+    if source_name == "final_composited.png":
+        if versions:
+            before = versions[-1]["file"]
+        else:
+            shutil.copyfile(job_dir(job_id) / source_name, job_dir(job_id) / "v0.png")
+            before = "v0.png"
+
     name = _save(job_id, result, f"v{step}.png")
     versions.append({
-        "step": step, "file": name, "action": action,
+        "step": step, "file": name, "action": action, "before": before,
+        "before_size": f"{source.width}x{source.height}",
         "instruction": instruction or ("Sharpened, %gx" % scale),
         "size": f"{result.width}x{result.height}",
     })
