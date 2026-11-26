@@ -649,3 +649,7 @@ a.act.primary{font-weight:600;padding:8px 16px;font-size:13px}
 .compare-cap{display:block;margin-top:6px;font-size:12px;color:var(--faint);
   white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .compare-cap.after{color:var(--ink)}
+.compare-frame{overflow:hidden}
+.compare-frame img{transition:transform .25s ease}
+.compare-grid.zoomed .compare-side{cursor:zoom-out}
+.compare-hint{margin:8px 0 0;font-size:12px;color:var(--faint)}

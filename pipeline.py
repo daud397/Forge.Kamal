@@ -268,7 +268,7 @@ def delivery_copy(job_id: str, name: str) -> Path:
     return out_path
 
 
-PREVIEW_EDGES = (512, 1024, 2048)
+PREVIEW_EDGES = (512, 1024, 2048, 4096)
 
 
 def preview_copy(job_id: str, name: str, edge: int) -> Path:

@@ -1020,10 +1020,14 @@ function compareStrip(card, state, ver) {
       const src = fileUrl(file) + "?w=1024&v=" + ver;
       fig.innerHTML = `<span class="compare-frame"><img src="${esc(src)}" alt=""></span>
         <span class="compare-cap ${i ? "after" : ""}">${esc(cap)}</span>`;
-      fig.onclick = () => zoom(fileUrl(file) + "?w=2048&v=" + ver, { label: cap });
+      fig.onclick = (ev) => closeUp(grid, ev, fig);
+      fig.ondblclick = () => zoom(fileUrl(file) + "?w=2048&v=" + ver, { label: cap });
       grid.appendChild(fig);
     });
   };
+  const hint = document.createElement("p");
+  hint.className = "compare-hint";
+  hint.textContent = "Click a spot to zoom both sides in 3\u00d7 at the same place — that is where sharpening shows. Click again to zoom out. Double-click to open full screen.";
   if (pairs.length > 1) pairs.forEach(pr => {
     const b = document.createElement("button");
     b.textContent = pr.tab; b.dataset.k = pr.key;
@@ -1031,5 +1035,23 @@ function compareStrip(card, state, ver) {
     sw.appendChild(b);
   });
   show(pairs[0]);
+  box.appendChild(hint);
   card.appendChild(box);
+}
+
+// Both sides zoom to the same point, so detail can be compared like for like.
+function closeUp(grid, ev, fig) {
+  const imgs = grid.querySelectorAll(".compare-frame img");
+  const zoomed = grid.classList.toggle("zoomed");
+  const r = fig.querySelector("img").getBoundingClientRect();
+  const x = ((ev.clientX - r.left) / r.width * 100).toFixed(1);
+  const y = ((ev.clientY - r.top) / r.height * 100).toFixed(1);
+  imgs.forEach(im => {
+    if (zoomed && !im.dataset.hi) {      // a bigger preview so the zoom shows real pixels
+      im.dataset.hi = "1";
+      im.src = im.src.replace(/w=\d+/, "w=4096");
+    }
+    im.style.transformOrigin = `${x}% ${y}%`;
+    im.style.transform = zoomed ? "scale(3)" : "";
+  });
 }

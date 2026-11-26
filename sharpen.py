@@ -65,7 +65,7 @@ def _x4(rgb: np.ndarray, tile: int = 256, pad: int = 12, progress=None) -> np.nd
     so tile seams never show."""
     sess = _sess()
     h, w, _ = rgb.shape
-    out = np.zeros((h * 4, w * 4, 3), dtype=np.float32)
+    out = np.zeros((h * 4, w * 4, 3), dtype=np.uint8)     # uint8: 8K x 8K is 200MB, not 800MB
     chw = np.ascontiguousarray(rgb.transpose(2, 0, 1))[None]
     tiles = [(y, x) for y in range(0, h, tile) for x in range(0, w, tile)]
     for n, (y, x) in enumerate(tiles):
@@ -74,11 +74,11 @@ def _x4(rgb: np.ndarray, tile: int = 256, pad: int = 12, progress=None) -> np.nd
         py1, px1 = min(h, y1 + pad), min(w, x1 + pad)
         res = sess.run(None, {"input": chw[:, :, py0:py1, px0:px1]})[0][0]
         oy, ox = (y - py0) * 4, (x - px0) * 4
-        out[y * 4:y1 * 4, x * 4:x1 * 4] = res[:, oy:oy + (y1 - y) * 4,
-                                             ox:ox + (x1 - x) * 4].transpose(1, 2, 0)
+        part = res[:, oy:oy + (y1 - y) * 4, ox:ox + (x1 - x) * 4].transpose(1, 2, 0)
+        out[y * 4:y1 * 4, x * 4:x1 * 4] = np.rint(np.clip(part, 0, 1) * 255)
         if progress and (n % 8 == 0 or n == len(tiles) - 1):
             progress(n + 1, len(tiles))
-    return np.clip(out, 0.0, 1.0)
+    return out
 
 
 def target_size(size: tuple[int, int], scale: float) -> tuple[int, int]:
@@ -100,26 +100,21 @@ def sharpen(img: Image.Image, scale: float = 2.0, strength: float = 0.85,
     src = img.convert("RGBA")
     out_w, out_h = target_size(src.size, scale)
 
-    # The network enlarges 4x. Feed it at most SHARPEN_MAX_INPUT on the long
-    # edge: past that the output would be bigger than anything we deliver, and
-    # the time grows with every pixel. A 4000px phone photo is shrunk to the
-    # cap first, which also averages away its sensor noise before rebuilding.
+    # The network enlarges 4x. Feed it the whole image, never a shrunken copy:
+    # shrinking first threw away real detail before rebuilding it, so a clean
+    # 1920px final came back no sharper than it went in. Only a photo past
+    # SHARPEN_MAX_INPUT is reduced, to keep the time and memory bounded.
     limit = config.SHARPEN_MAX_INPUT
     feed = src
     if max(src.size) > limit:
         k = limit / max(src.size)
         feed = src.resize((round(src.width * k), round(src.height * k)), Image.LANCZOS)
-    # Never feed more than the output needs: input x4 should only just cover it.
-    need = max(out_w, out_h) / 4
-    if max(feed.size) > need * 1.25 and need >= 64:
-        k = (need * 1.25) / max(feed.size)
-        feed = feed.resize((max(1, round(feed.width * k)), max(1, round(feed.height * k))),
-                           Image.LANCZOS)
 
     rgb = np.asarray(feed.convert("RGB"), dtype=np.float32) / 255.0
     with _run_lock:
         big = _x4(rgb, progress=progress)
-    sr = Image.fromarray(np.rint(big * 255).astype(np.uint8), "RGB")
+    sr = Image.fromarray(big, "RGB")
+    del big
     sr = sr.resize((out_w, out_h), Image.LANCZOS) if sr.size != (out_w, out_h) else sr
 
     plain = src.convert("RGB").resize((out_w, out_h), Image.LANCZOS)
