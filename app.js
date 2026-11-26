@@ -7,6 +7,7 @@ let attached = [];
 let threadId = "";   // the chat this run belongs to
 let busy = false;
 let lastRender = "";      // so polling doesn't rebuild an identical thread
+let sendOnAttach = false; // a task button chose the words; the file is the last step
 
 init();
 
@@ -50,6 +51,15 @@ function wire() {
     $("lightbox").hidden = true;
     if (lbUse) lbUse();
   };
+  $("lbsharpen").onclick = () => {
+    $("lightbox").hidden = true;
+    const m = ($("lbimg").src || "").match(/\/file\/([^/?]+)/);
+    enhance("upscale", 2, m ? decodeURIComponent(m[1]) : "");
+  };
+  $("lbstudio").onclick = () => {
+    $("lightbox").hidden = true;
+    openStudio($("lbimg").src, $("lblabel").textContent || "Image from this run");
+  };
   $("lbasis").onclick = () => {
     $("lightbox").hidden = true;
     if (lbAsIs) lbAsIs();
@@ -77,6 +87,7 @@ function wire() {
 }
 
 function startFresh() {
+  sendOnAttach = false;
   jobId = null;
   threadId = "";
   attached = [];
@@ -99,26 +110,77 @@ function introBlock() {
     `<button class="chip" data-say="${esc(t.text)}">${esc(t.label)}</button>`).join("");
 
   d.innerHTML = `
-    <h1>What are we photographing?</h1>
-    <p>Attach a duvet or fabric photo and pick a standard shot, or describe a
-       product to make one from nothing.</p>
-    <p class="chips-label">Standard shots — attach a reference first</p>
-    <div class="chips">${shots}</div>
-    <p class="chips-label">Or from nothing</p>
-    <div class="chips">
-      <button class="chip" data-say="a stonewashed sand cotton duvet set on a made bed, UK bedroom, 1:1 aspect ratio">A sand cotton duvet set</button>
-      <button class="chip" data-say="a matte charcoal linen cushion cover, 45cm square, hidden zip">A charcoal linen cushion</button>
-    </div>`;
-  setTimeout(() => d.querySelectorAll(".chip").forEach(c => {
-    c.onclick = () => {
-      $("box").value = c.dataset.say;
-      // Standard shots work from a reference photo, so load the wording and let
-      // them attach the file rather than firing a run with nothing to match.
-      if (attached.length) submit();
-      else { $("box").focus(); $("attach").classList.add("nudge"); }
-    };
+    <h1>What would you like to make?</h1>
+    <p>Pick a task. Each one tells you what to attach.</p>
+    <div class="tasks">
+      <button class="task" data-task="bed">
+        <span class="task-ico">\u{1F6CF}</span>
+        <b>Put a design on a bed</b>
+        <span>Attach a duvet or fabric photo. Forge makes the listing photo.</span>
+      </button>
+      <button class="task" data-task="sharpen">
+        <span class="task-ico">\u{1F50D}</span>
+        <b>Sharpen a photo</b>
+        <span>Attach a blurry or small image. Get it back sharper and 2&times; bigger. Free.</span>
+      </button>
+      <button class="task" data-task="studio">
+        <span class="task-ico">\u{1F3A8}</span>
+        <b>Design studio (CAD)</b>
+        <span>Build repeats, change motif size, separate colours, make colourways.</span>
+      </button>
+      <button class="task" data-task="describe">
+        <span class="task-ico">\u270E</span>
+        <b>Make from a description</b>
+        <span>No photo yet? Describe the product and get three options.</span>
+      </button>
+    </div>
+    <div class="taskmore" id="taskmore" hidden></div>`;
+
+  setTimeout(() => d.querySelectorAll(".task").forEach(b => {
+    b.onclick = () => pickTask(b.dataset.task, shots);
   }), 0);
   return d;
+}
+
+function pickTask(task, shots) {
+  const more = $("taskmore");
+  document.querySelectorAll(".task").forEach(t =>
+    t.classList.toggle("on", t.dataset.task === task));
+  if (task === "studio") { openStudio(); return; }
+  if (task === "sharpen") {
+    $("box").value = "Make this image sharper and higher resolution";
+    more.hidden = false;
+    more.innerHTML = `<p>Now attach the photo with <b>+</b> (or the button below), then press send.</p>
+      <button class="act primary" id="taskattach">Attach photo…</button>`;
+    $("taskattach").onclick = () => $("files").click();
+    sendOnAttach = true;
+    if (attached.length) submit(); else $("files").click();
+    return;
+  }
+  if (task === "describe") {
+    more.hidden = false;
+    more.innerHTML = `<p>Type what the product is in the box below and press send. For example:</p>
+      <div class="chips">
+        <button class="chip" data-say="a stonewashed sand cotton duvet set on a made bed, UK bedroom, 1:1 aspect ratio">A sand cotton duvet set</button>
+        <button class="chip" data-say="a matte charcoal linen cushion cover, 45cm square, hidden zip">A charcoal linen cushion</button>
+      </div>`;
+    $("box").focus();
+  } else {
+    more.hidden = false;
+    more.innerHTML = `<p>1. Choose the shot &nbsp; 2. Attach the duvet or fabric photo with <b>+</b> &nbsp; 3. Send</p>
+      <div class="chips">${shots}</div>
+      <p class="chips-label">Got two photos — a design and a bed to put it on? Attach the design first, then the bed, and say
+      “apply the first image design on the second image bed”.</p>`;
+  }
+  more.querySelectorAll(".chip").forEach(c => {
+    c.onclick = () => {
+      more.querySelectorAll(".chip").forEach(x => x.classList.toggle("on", x === c));
+      $("box").value = c.dataset.say;
+      $("box").dispatchEvent(new Event("input"));
+      if (task === "describe" || attached.length) submit();
+      else { sendOnAttach = true; $("attach").classList.add("nudge"); $("files").click(); }
+    };
+  });
 }
 
 // ---------------------------------------------------------------- sending
@@ -138,6 +200,10 @@ function showAttached() {
   // Clearing the input lets the same file be picked again after removal.
   $("files").value = "";
   renderAttached();
+  if (sendOnAttach && attached.length && $("box").value.trim()) {
+    sendOnAttach = false;
+    submit();
+  }
 }
 
 function renderAttached() {
@@ -321,7 +387,7 @@ function render(state) {
     state.stage, state.chosen_draft, state.final_file,
     (state.drafts || []).length, (state.versions || []).length,
     (state.exports || []).length, (state.chat || []).length,
-    (state.log || []).length,
+    (state.log || []).length, state.progress || "", !!state.busy,
   ]);
   if (stamp === lastRender) return;
   lastRender = stamp;
@@ -345,7 +411,11 @@ function render(state) {
   }
 
   if (!state.drafts && !state.final_file) {
-    status(working(state.stage));
+    status(state.progress || working(state.stage));
+  } else if (state.busy) {
+    // Work on an existing image (sharpen, edit) used to show nothing at all
+    // until it finished, so it looked as if the button had not worked.
+    setTimeout(() => status(state.progress || working(state.stage)), 0);
   }
 
   if (state.renders && Object.keys(state.renders).length) {
@@ -375,7 +445,8 @@ function working(stage) {
     analysing: "Looking at the product…",
     briefed: "Brief written.",
     drafting: "Generating options…",
-    finalising: "Making the final image…",
+    finalising: "Making the image… this usually takes 30–90 seconds",
+    queued: "Starting…",
     exporting: "Exporting…",
   }[stage] || "Working…";
 }
@@ -522,11 +593,16 @@ function finalCard(state) {
   dl.title = "Full resolution, lossless PNG, never smaller than 3000px";
   acts.appendChild(dl);
 
-  add(acts, "Another set of options", moreOptions);
+  add(acts, "Sharpen ×2", () => enhance("upscale", 2),
+      "Sharper and twice the size. Runs on our server: free, and it does not change the design.");
   add(acts, "Edit image", () =>
-    openEditor(fileUrl(state.final_file) + "?w=2048&v=" + ver));
-  add(acts, "Enlarge 2×", () => enhance("upscale"));
-  add(acts, "Run again", repeat);
+    openEditor(fileUrl(state.final_file) + "?w=2048&v=" + ver),
+      "Paint an area and say what to change, or change the whole picture");
+  add(acts, "Another version", moreOptions, "Same request, a fresh attempt");
+  add(acts, "Open in Design studio", () =>
+    openStudio(fileUrl(state.final_file) + "?w=2048&v=" + ver, "Final image"),
+      "Use this image as a motif: repeats, colourways");
+  add(acts, "Run again", repeat, "Start the whole run again from your original files");
 
   (state.exports || []).forEach(e => {
     const a = document.createElement("a");
@@ -552,9 +628,10 @@ function finalCard(state) {
          { label: "Final image" });
 }
 
-function add(parent, label, fn) {
+function add(parent, label, fn, tip) {
   const b = document.createElement("button");
   b.textContent = label;
+  if (tip) b.title = tip;
   b.onclick = fn;
   parent.appendChild(b);
 }
@@ -589,11 +666,14 @@ async function moreOptions() {
   watch();
 }
 
-async function enhance(action) {
+async function enhance(action, scale = 2, source = "") {
+  if (!jobId) return;
+  say("user", action === "upscale" ? `Sharpen ×${scale}` : "Change the image");
   const body = new FormData();
   body.append("instruction", "");
   body.append("action", action);
-  body.append("scale", "2");
+  body.append("scale", String(scale));
+  if (source) body.append("source", source);
   await fetch(`/api/jobs/${jobId}/enhance`, { method: "POST", body });
   lastRender = "";
   watch();

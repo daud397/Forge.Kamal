@@ -12,3 +12,5 @@ fast-simplification>=0.1
 pillow-heif>=0.16
 # Optional: STEP/IGES support via OpenCascade
 # cascadio>=0.0.9
+# Runs the sharpening model (sharpen_x4.onnx) on the CPU.
+onnxruntime>=1.18

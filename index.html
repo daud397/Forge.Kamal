@@ -25,7 +25,8 @@
     </div>
   </div>
 
-  <button class="new" id="newrun">New chat</button>
+  <button class="new" id="newrun">+ New chat</button>
+  <button class="new alt" id="studiobtn">Design studio (CAD)</button>
 
   <nav class="tabs">
     <button class="tab on" data-tab="runs">Runs</button>
@@ -64,9 +65,9 @@
   <div class="composer-wrap">
     <div class="composer">
       <input type="file" id="files" multiple hidden
-             accept=".stl,.obj,.ply,.glb,.gltf,.off,.3mf,.step,.stp,.iges,.igs,.png,.jpg,.jpeg,.webp,.tif,.tiff">
+             accept=".stl,.obj,.ply,.glb,.gltf,.off,.3mf,.step,.stp,.iges,.igs,.png,.jpg,.jpeg,.webp,.tif,.tiff,.heic,.heif">
       <button class="icon attach" id="attach" title="Attach a photo or CAD file">+</button>
-      <textarea id="box" rows="1" placeholder="Describe a product, or say what to change"></textarea>
+      <textarea id="box" rows="1" placeholder="Attach a photo with +, then say what you want — or describe a product"></textarea>
       <button class="send" id="send" aria-label="Send">↑</button>
     </div>
     <p class="pending" id="attached" hidden></p>
@@ -104,6 +105,100 @@
   </div>
 </div>
 
+<!-- Design studio: textile CAD -->
+<div class="studio" id="studio" hidden>
+  <div class="ed-head">
+    <span class="ed-title">Design studio</span>
+    <span class="ed-hint" id="sthint">Open a motif or artwork to build a repeat.</span>
+    <button class="icon" id="stclose" aria-label="Close">✕</button>
+  </div>
+
+  <div class="st-body">
+    <div class="st-panel">
+
+      <section class="st-sec">
+        <h4><span class="st-num">1</span> Motif</h4>
+        <input type="file" id="stfile" accept="image/*" hidden>
+        <div class="st-row">
+          <button class="st-btn primary" id="stopen">Open image…</button>
+          <button class="st-btn" id="stcrop" disabled title="Drag a box on the image to keep only that part">Crop</button>
+          <button class="st-btn" id="stuncrop" hidden>Undo crop</button>
+        </div>
+        <p class="st-note" id="stsrcinfo">No motif yet.</p>
+      </section>
+
+      <section class="st-sec">
+        <h4><span class="st-num">2</span> Repeat</h4>
+        <div class="st-seg" id="strepeat">
+          <button data-v="straight" class="on" title="Block repeat: every motif in a straight grid">Straight</button>
+          <button data-v="halfdrop" title="Each column drops by half a motif">Half-drop</button>
+          <button data-v="brick" title="Each row shifts by half a motif">Half-brick</button>
+          <button data-v="mirror" title="Motif flipped left-right and up-down">Mirror</button>
+        </div>
+        <label class="st-lab">Motif size <span id="stscalev">100%</span>
+          <input type="range" id="stscale" min="10" max="300" value="100"></label>
+        <label class="st-lab">Spacing <span id="stgapv">0%</span>
+          <input type="range" id="stgap" min="0" max="150" value="0"></label>
+        <label class="st-lab">Rotate
+          <span class="st-seg small" id="strot">
+            <button data-v="0" class="on">0°</button><button data-v="90">90°</button>
+            <button data-v="180">180°</button><button data-v="270">270°</button>
+          </span></label>
+        <label class="st-lab inline">Ground colour
+          <input type="color" id="stground" value="#f4efe6">
+          <span class="st-note">shows in the spacing and any see-through parts</span></label>
+      </section>
+
+      <section class="st-sec">
+        <h4><span class="st-num">3</span> Colours</h4>
+        <label class="st-lab">Separate into <span id="stkv">6</span> colours
+          <input type="range" id="stk" min="2" max="12" value="6"></label>
+        <div class="st-row">
+          <button class="st-btn" id="stseparate" disabled>Separate colours</button>
+          <button class="st-btn" id="storig" hidden>Back to original</button>
+        </div>
+        <div class="st-palette" id="stpalette"></div>
+        <p class="st-note" id="stpalnote" hidden>Click a colour to change it. Each change makes a new colourway.</p>
+        <div class="st-row" id="stcwrow" hidden>
+          <button class="st-btn" id="stsavecw">Save colourway</button>
+        </div>
+        <div class="st-colourways" id="stcolourways"></div>
+      </section>
+
+      <section class="st-sec">
+        <h4><span class="st-num">4</span> Use it</h4>
+        <label class="st-lab inline">Print resolution
+          <select id="stdpi"><option>100</option><option selected>150</option><option>200</option><option>300</option></select> dpi</label>
+        <p class="st-note" id="stsize">—</p>
+        <div class="st-col">
+          <button class="st-btn primary" id="stsend" disabled>Use on a bed in Forge →</button>
+          <button class="st-btn" id="sttile" disabled>↓ Download repeat tile (seamless)</button>
+          <button class="st-btn" id="stsheet" disabled>↓ Download fabric sheet (3000px)</button>
+        </div>
+      </section>
+    </div>
+
+    <div class="st-view">
+      <div class="st-viewbar">
+        <div class="st-seg small" id="stmode">
+          <button data-v="repeat" class="on">Repeat preview</button>
+          <button data-v="fabric">On fabric</button>
+          <button data-v="motif">Motif</button>
+        </div>
+        <label class="st-lab inline">Zoom <input type="range" id="stzoom" min="20" max="200" value="60"></label>
+        <label class="st-lab inline"><input type="checkbox" id="stoutline"> Show repeat outline</label>
+      </div>
+      <div class="st-canvaswrap" id="stwrap">
+        <canvas id="stcanvas"></canvas>
+        <div class="st-empty" id="stempty">
+          <p>Open a motif to start: a scan of artwork, a photo of a print, or a design from a finished run.</p>
+          <button class="st-btn primary" id="stopen2">Open image…</button>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
 <div class="lightbox" id="lightbox" hidden>
   <button class="icon lb-close" id="lbclose" aria-label="Close">✕</button>
   <img id="lbimg" alt="">
@@ -111,11 +206,14 @@
     <span class="lb-label" id="lblabel"></span>
     <a class="lb-btn" id="lbdownload" download>Download</a>
     <button class="lb-btn" id="lbedit">Edit</button>
+    <button class="lb-btn" id="lbsharpen">Sharpen</button>
+    <button class="lb-btn" id="lbstudio">Open in Design studio</button>
     <button class="lb-btn" id="lbasis" hidden>Use as-is · free</button>
     <button class="lb-btn lb-primary" id="lbuse" hidden>Refine this one</button>
   </div>
 </div>
 
 <script src="/app.js"></script>
+<script src="/studio.js"></script>
 </body>
 </html>

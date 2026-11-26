@@ -15,7 +15,7 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 COPY *.py ./
-COPY index.html styles.css app.js ./
+COPY index.html styles.css app.js studio.js sharpen_x4.onnx ./
 
 # Attach a Railway volume mounted at /app/data. No VOLUME directive here:
 # Railway's builder rejects it outright and the build fails validation before

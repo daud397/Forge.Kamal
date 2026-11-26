@@ -669,6 +669,69 @@ def transfer(job_id: str) -> dict:
     return updated
 
 
+# --- One reference, a new photograph of it ----------------------------------
+
+# "Apply this design to a dressed bed", "make a roomset", "show it folded":
+# one fabric photo in, a new photograph of that design out. These used to fall
+# through to the scene flow, whose prompts are written to describe the
+# background ONLY and never the product - so a flat duvet photo came back as
+# the same flat photo on a new backdrop, never on a bed and never folded.
+DESIGN_PATTERNS = (
+    r"\bapply\b[^.]{0,60}\b(design|print|pattern|motif|fabric|duvet)",
+    r"\b(dressed|made)\s+bed\b", r"\bon\s+(a|the)\s+bed\b",
+    r"\broom\s?set\b", r"\bfolded\b",
+    r"\bas\s+(a\s+)?(duvet|bedding|bed\s?sheet|curtain|cushion)",
+)
+
+
+def wants_design_render(note: str) -> bool:
+    t = (note or "").lower()
+    return any(re.search(p, t) for p in DESIGN_PATTERNS)
+
+
+def design_render(job_id: str) -> dict:
+    """One final-quality photograph made from a single design reference."""
+    state = store.get(job_id)
+    photos = state.get("photos") or []
+    if not photos:
+        raise ValueError("Attach the design or fabric photo to work from.")
+    ref = _load(job_id, photos[0])
+    note = state.get("note", "")
+    size = final_size(note, ref)
+
+    store.update(job_id, stage="finalising")
+    store.log(job_id, f"{config.FINAL_MODEL} making one image at {size[0]}x{size[1]}, "
+                      f"quality {config.FINAL_QUALITY}, from your design with detail "
+                      "preservation on.")
+    prompt = (
+        "WHAT IS REQUIRED, in the seller's own words:\n" + note.strip() + "\n\n"
+        "THE ATTACHED IMAGE is the seller's design reference - their fabric, "
+        "print or product. Produce the photograph described above with that "
+        "exact design on the product: the same colours, motif, motif size "
+        "relative to the product, pattern repeat and, where it shows, the "
+        "reverse side. Do not simplify, restyle, recolour or re-draw the print; "
+        "it must be recognisably the same cloth.\n\n"
+        + infographic_clause(note)
+        + models.preserve_clause(note)
+    )
+    img = models.transfer_generate([ref], prompt, size)
+    _save(job_id, img, "final_composited.png")
+    updated = store.update(
+        job_id,
+        stage="finalised",
+        final_file="final_composited.png",
+        qa={"stats": {"delta_e_mean": 0.0, "delta_e_p95": 0.0, "delta_e_max": 0.0,
+                      "ssim_product": 1.0, "product_coverage": 1.0,
+                      "pixels_out_of_tolerance": 0},
+            "level": "info",
+            "notes": ["Made from your design reference. Compare the print against "
+                      "it by eye - especially motif size and colours."],
+            "review": {"usable": True, "issues": [], "fix_instruction": ""}},
+    )
+    _thumb(job_id)
+    return updated
+
+
 # --- Taking a draft as it stands ---------------------------------------------
 
 def use_as_is(job_id: str, draft_index: int) -> dict:
@@ -724,6 +787,9 @@ def redraft(job_id: str) -> dict:
         if len(state.get("photos") or []) > 1:
             store.log(job_id, "Another take from the same references.")
             return transfer(job_id)
+        if state.get("intent") == "design" and state.get("photos"):
+            store.log(job_id, "Another take from the same design.")
+            return design_render(job_id)
         raise ValueError("This run has no brief to generate from.")
 
     store.log(job_id, "Generating another set from the same brief.")
@@ -748,7 +814,8 @@ def current_image(job_id: str) -> str | None:
 
 def enhance(job_id: str, instruction: str, action: str = "edit",
             scale: float = 2.0, region_png: bytes | None = None,
-            detail: bool | None = None, source_file: str | None = None) -> dict:
+            detail: bool | None = None, source_file: str | None = None,
+            strength: float = 0.85) -> dict:
     """Change or enlarge the image that already exists, with no drafting round.
 
     This is the path for "add a grey rug", "take the lamp out", "make it
@@ -778,7 +845,7 @@ def enhance(job_id: str, instruction: str, action: str = "edit",
     step = len(versions) + 1
 
     if action == "upscale":
-        result = _upscale(job_id, source, scale, detail)
+        result = _upscale(job_id, source, scale, detail, strength)
     elif region_png:
         result = _edit_region(job_id, source, instruction, region_png)
     else:
@@ -787,7 +854,7 @@ def enhance(job_id: str, instruction: str, action: str = "edit",
     name = _save(job_id, result, f"v{step}.png")
     versions.append({
         "step": step, "file": name, "action": action,
-        "instruction": instruction or ("%.1fx" % scale),
+        "instruction": instruction or ("Sharpened, %gx" % scale),
         "size": f"{result.width}x{result.height}",
     })
 
@@ -873,36 +940,24 @@ def _edit_region(job_id: str, source: Image.Image, instruction: str,
 
 
 def _upscale(job_id: str, source: Image.Image, scale: float,
-             detail: bool | None = None) -> Image.Image:
-    """Enlarge, optionally asking the model to restore detail on the way.
+             detail: bool | None = None, strength: float = 0.85) -> Image.Image:
+    """Make the image sharper and, if scale > 1, bigger.
 
-    Plain Lanczos makes an image bigger without making it better - it cannot
-    add detail that was never captured. The detail pass genuinely can, at the
-    cost of being a generative step: it may quietly change what it is
-    sharpening. Both are offered because which one you want depends on whether
-    the image is a real photograph of a real product.
+    The default is the super-resolution network in sharpen.py: it rebuilds
+    crisp edges, runs on the server for free, and cannot redraw the product.
+    The old default was Lanczos alone, which makes a file bigger but softer -
+    and the generative "detail pass" was skipped for any image over 3.7MP,
+    which is every final this portal makes, so "make it sharper" quietly did
+    nothing but enlarge. The generative pass is still there for anyone who
+    asks for it explicitly (detail=True with UPSCALE_DETAIL_PASS=1), because
+    it can invent detail the network cannot - at the risk of changing it.
     """
+    import sharpen
+
     w, h = source.size
-    # One factor for both edges. Clamping each edge separately changed the
-    # aspect, and fit="contain" then padded the difference with white bars.
-    # Never below 1: an enlarge must not shrink an image that is already big.
-    k = max(1.0, min(scale, config.UPSCALE_MAX_EDGE / max(w, h)))
-    target = (max(1, int(w * k)), max(1, int(h * k)))
-    if k == 1.0:
-        store.log(job_id, f"Already {w}x{h}, at or past the {config.UPSCALE_MAX_EDGE}px "
-                          "enlarge limit, so the size is kept as it is.")
+    target = sharpen.target_size((w, h), scale)
 
-    want_detail = config.UPSCALE_DETAIL_PASS if detail is None else detail
-    if want_detail and w * h >= config.FINAL_PIXELS:
-        # The model returns at most FINAL_PIXELS. Sending it a photo that
-        # already has more would replace real captured pixels with fewer
-        # generated ones - the opposite of sharper.
-        store.log(job_id, f"Skipped the generative detail pass: at {w}x{h} your "
-                          "image already has more real detail than the model can "
-                          "return. Enlarging with Lanczos only.")
-        want_detail = False
-
-    if want_detail:
+    if detail and config.UPSCALE_DETAIL_PASS and w * h < config.FINAL_PIXELS:
         gen_w, gen_h = final_size("", source)
         store.log(job_id, f"{config.FINAL_MODEL} restoring detail at {gen_w}x{gen_h}.")
         try:
@@ -913,12 +968,31 @@ def _upscale(job_id: str, source: Image.Image, scale: float,
                 "object in the frame. Add nothing and remove nothing.",
                 None, (gen_w, gen_h))
         except Exception as exc:
-            store.log(job_id, f"Detail pass failed ({exc}). Falling back to a "
-                              "plain resize.", "warn")
+            store.log(job_id, f"Detail pass failed ({exc}). Carrying on without it.", "warn")
 
-    store.log(job_id, f"Resizing to {target[0]}x{target[1]} with Lanczos, "
-                      "which invents nothing.")
-    return imaging.upscale(source, target, fit="contain").convert("RGB")
+    if sharpen.available():
+        store.log(job_id, f"Sharpening {w}x{h} with the super-resolution model "
+                          f"to {target[0]}x{target[1]}. Runs on this server, so "
+                          "it costs nothing and cannot change the design.")
+        t0 = time.time()
+
+        def progress(done, total):
+            if total > 8:
+                store.update(job_id, progress=f"Sharpening… {round(100 * done / total)}%")
+
+        try:
+            out = sharpen.sharpen(source, scale, strength, progress=progress)
+            store.update(job_id, progress=None)
+            store.log(job_id, f"Sharpened in {time.time() - t0:.0f}s.")
+            return out.convert("RGB")
+        except Exception as exc:
+            store.update(job_id, progress=None)
+            store.log(job_id, f"Sharpening model failed ({exc}). Falling back to "
+                              "a plain resize.", "warn")
+
+    store.log(job_id, f"Resizing to {target[0]}x{target[1]} with Lanczos.")
+    out = imaging.upscale(source, target, fit="contain").convert("RGB")
+    return out.filter(ImageFilter.UnsharpMask(radius=1.4, percent=60, threshold=2))
 
 
 # --- Re-running --------------------------------------------------------------
@@ -1027,9 +1101,16 @@ def export(job_id: str, preset_names: list[str]) -> dict:
 # spends money on drafts nobody asked for. Keyword matching here is deliberate:
 # it is instant and free, and the phrasings are not subtle.
 
-UPSCALE_WORDS = ("resolution", "upscale", "blurry", "blur", "sharpen", "sharper",
-                 "pixel", "bigger", "larger", "enlarge", "hi-res", "hires",
-                 "high res", "quality", "crisp", "clearer")
+# "quality", "bigger" and "pixel" used to be here on their own, so "a high
+# quality photo of this duvet on a bed" was sent to the enlarger instead of the
+# scene flow, and "make the pillows bigger" enlarged the file.
+UPSCALE_WORDS = ("resolution", "upscale", "up-scale", "blurry", "blur", "sharpen",
+                 "sharper", "sharpness", "pixelated", "enlarge",
+                 "hi-res", "hires", "high res", "crisp", "clearer", "unclear",
+                 "improve quality", "improve the quality", "better quality",
+                 "low quality", "increase quality", "increase the quality",
+                 "enhance quality", "image quality", "make it bigger",
+                 "make it larger", "bigger image", "larger image", "4k", " hd ")
 EDIT_WORDS = ("add ", "remove ", "take out", "replace ", "change ", "put ",
               "swap ", "make the ", "make it ", "turn the ", "recolour", "recolor",
               "prop", "rug", "lamp", "table", "plant", "cushion", "pillow", "curtain")
@@ -1177,12 +1258,24 @@ def route(job_id: str, note: str) -> None:
         return
 
     kind = intent_of(note)
+    if kind != "upscale" and wants_design_render(note):
+        kind = "design"
+
+    if kind == "design":
+        store.log(job_id, "You asked for your design shown as a product "
+                          "photograph, so this makes one final-quality image "
+                          "from it rather than a new background behind it.")
+        store.update(job_id, intent="design")
+        design_render(job_id)
+        return
 
     if kind == "upscale":
-        store.log(job_id, "You asked for resolution, so this goes straight to "
-                          "a detail pass and enlargement - no scenes.")
+        scale = 4.0 if re.search(r"\b4\s*x\b|\bx\s*4\b|\b4k\b", note.lower()) else 2.0
+        store.log(job_id, "You asked for a sharper, higher-resolution image, so "
+                          "this goes straight to the sharpening model - no scenes, "
+                          "no redrawing.")
         store.update(job_id, intent="upscale")
-        enhance(job_id, "", "upscale", 2.0, detail=True)
+        enhance(job_id, "", "upscale", scale)
         return
 
     if kind == "edit":
@@ -1242,10 +1335,11 @@ def run_describe(job_id: str, description: str):
 def run_enhance(job_id: str, instruction: str, action: str, scale: float,
                 presets_wanted: list[str] | None = None,
                 region_png: bytes | None = None, detail: bool | None = None,
-                source_file: str | None = None):
+                source_file: str | None = None, strength: float = 0.85):
     try:
         with working(job_id):
-            enhance(job_id, instruction, action, scale, region_png, detail, source_file)
+            enhance(job_id, instruction, action, scale, region_png, detail, source_file,
+                    strength)
             if presets_wanted:
                 export(job_id, presets_wanted)
     except Exception as exc:

@@ -105,6 +105,31 @@ whole-frame edit, a generated scene — is limited to the model's output size an
 enlarged with Lanczos. Set `FINAL_PIXELS=8294400` to generate at the API's
 ceiling (about 2880×2880) for those; OpenAI marks that size experimental.
 
+## Sharpen a photo (super-resolution)
+
+"Sharpen ×2" on any image, the **Sharpen a photo** task on the start screen, or
+any message like "make this sharper / higher resolution" runs Real-ESRGAN's
+general model (`sharpen_x4.onnx`, BSD-3-Clause) on the server's CPU. It
+rebuilds crisp edges instead of stretching blurry ones, costs nothing per image,
+and cannot redraw the design the way a generative edit can. About 20 seconds for
+a 1600px photo on 4 cores. `SHARPEN_MAX_INPUT` (default 1600) caps the edge fed
+to the network. `make_sharpen_model.py` rebuilds the .onnx from the published
+weights if it is ever lost.
+
+## Design studio (textile CAD)
+
+Opened from the sidebar, the start screen, or "Open in Design studio" on any
+image. Runs entirely in the browser:
+
+- **Motif**: open artwork, a photo of a print or an image from a run; crop to one motif.
+- **Repeat**: straight, half-drop, half-brick or mirror; motif size, spacing,
+  rotation and ground colour; repeat size in cm at a chosen dpi.
+- **Colours**: separate into 2-12 colours, click a colour to recolour it, save
+  colourways A, B, C... and switch between them.
+- **Use it**: download the seamless repeat tile or a 3000px fabric sheet, or
+  "Use on a bed in Forge" to attach the fabric to the chat with the bed
+  instruction filled in.
+
 ## Two ways to start a run
 
 **From a file.** Drop a CAD file or a photograph. The product is real, so scene

@@ -225,6 +225,7 @@ async def enhance(job_id: str,
                   presets: str = Form(""),
                   detail: str = Form(""),
                   source: str = Form(""),
+                  strength: float = Form(0.85),
                   region: UploadFile | None = File(None)):
     """Work on the image this run already has, with no drafting round."""
     if not store.get(job_id):
@@ -239,7 +240,7 @@ async def enhance(job_id: str,
     pipeline.queue(job_id)
     pool.submit(pipeline.run_enhance, job_id, instruction, action,
                 max(1.0, min(4.0, scale)), wanted, painted, want_detail,
-                source.strip() or None)
+                source.strip() or None, max(0.0, min(1.0, strength)))
     return {"ok": True}
 
 
@@ -342,6 +343,7 @@ FRONTEND = {
     "index.html": "text/html; charset=utf-8",
     "styles.css": "text/css; charset=utf-8",
     "app.js": "text/javascript; charset=utf-8",
+    "studio.js": "text/javascript; charset=utf-8",
 }
 
 

@@ -17,7 +17,7 @@ for d in (UPLOADS, RENDERS, DRAFTS, FINALS, EXPORTS):
 # Bump this whenever the code changes. /api/status reports it, so there is a
 # way to confirm which build is actually running rather than inferring it from
 # behaviour - which has already cost us a debugging session once.
-BUILD = "2026-10-03c"
+BUILD = "2026-11-26a"
 
 # --- Models -----------------------------------------------------------------
 REASONING_MODEL = os.getenv("REASONING_MODEL", "gpt-6-astra")
@@ -107,6 +107,10 @@ CAMERA_ANGLES = {
 # 3840px generation limit; that limit used to cap it, so "make it sharper" on a
 # 4032px phone photo shrank it to 3840.
 UPSCALE_MAX_EDGE = int(os.getenv("UPSCALE_MAX_EDGE", "8192"))
+
+# Sharpen (sharpen.py): the largest edge fed to the super-resolution network,
+# which enlarges 4x. 1600 in gives up to 6400 out; time grows with the square.
+SHARPEN_MAX_INPUT = int(os.getenv("SHARPEN_MAX_INPUT", "1600"))
 
 UPSCALE_DETAIL_PASS = os.getenv("UPSCALE_DETAIL_PASS", "").lower() in ("1", "true", "yes")
 

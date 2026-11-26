@@ -177,9 +177,10 @@ TOOLS = [
         "function": {
             "name": "upscale",
             "description": (
-                "Enlarge the current image. Use for requests about resolution, "
-                "size or sharpness. Say plainly that resizing cannot add detail "
-                "that was never captured."
+                "Sharpen the current image with the super-resolution model and "
+                "enlarge it. Use for requests about resolution, size, blur or "
+                "sharpness. Scale 1 sharpens without changing size. It runs on "
+                "the server, costs nothing and does not redraw the design."
             ),
             "parameters": {
                 "type": "object",
@@ -379,11 +380,12 @@ def _run_change_image(job_id: str, args: dict, pool) -> str:
 def _run_upscale(job_id: str, args: dict, pool) -> str:
     scale = max(1.0, min(4.0, float(args.get("scale", 2))))
     if not pipeline.current_image(job_id):
-        return "There's no image to enlarge yet."
+        return "There's no image to sharpen yet."
 
     _submit(pool, job_id, pipeline.enhance, job_id, "", "upscale", scale)
-    return (f"Enlarging {scale:g}x. Resizing makes the file bigger but cannot "
-            "recover detail that was never in the original.")
+    return (f"Sharpening and enlarging {scale:g}x with the super-resolution "
+            "model. It rebuilds crisp edges without redrawing the design, and "
+            "costs nothing.")
 
 
 def _run_repeat(job_id: str, args: dict, pool) -> str:
@@ -601,7 +603,8 @@ def _offline_turn(job_id, message, state, pool):
         return _run_more_options(job_id, {}, pool), ["more_options"]
 
     # Enlarge?
-    if any(w in text for w in ("upscale", "bigger", "resolution", "larger", "enlarge", "sharper")):
+    if any(w in text for w in ("upscale", "bigger", "resolution", "larger", "enlarge", "sharper",
+                                       "sharpen", "blurry", "crisp")):
         import re as _re
         m2 = _re.search(r"(\d(?:\.\d)?)\s*x", text)
         return _run_upscale(job_id, {"scale": float(m2.group(1)) if m2 else 2}, pool), ["upscale"]
