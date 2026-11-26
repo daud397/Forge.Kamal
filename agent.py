@@ -445,6 +445,22 @@ def _guarded(job_id, fn, *args):
 
 # --- Entry point -------------------------------------------------------------
 
+SHARPEN_WORDS = ("sharpen", "sharper", "sharpness", "blurry", "blur", "crisp",
+                 "clearer", "resolution", "upscale", "up-scale", "hi-res", "hires",
+                 "high res", "enlarge", "pixelated", "4k", "improve quality",
+                 "better quality", "image quality", "increase quality")
+
+
+def wants_sharpen(message: str) -> bool:
+    """A plain sharpen/resolution request with nothing else to change."""
+    t = (message or "").lower()
+    if not any(w in t for w in SHARPEN_WORDS):
+        return False
+    # "sharpen it and add a rug" is an edit with a sharpen on top; let the
+    # chat model handle anything that also asks for a content change.
+    return not any(w in t for w in ("add ", "remove ", "replace ", "change the ",
+                                    "put ", "swap ", "background", "scene"))
+
 def respond(job_id: str, message: str, pool) -> dict:
     state = store.get(job_id)
     if not state:
@@ -453,7 +469,16 @@ def respond(job_id: str, message: str, pool) -> dict:
     history = state.get("chat", [])
     history.append({"role": "user", "content": message})
 
-    if models.live():
+    # A request for sharpness or resolution goes straight to the sharpening
+    # model. Left to the chat model it was sometimes read as "change the
+    # image" and sent to a generative edit, which redraws the whole picture
+    # instead of sharpening it.
+    if wants_sharpen(message) and pipeline.current_image(job_id):
+        import re as _re
+        m = _re.search(r"(\d(?:\.\d)?)\s*x\b|\bx\s*(\d)", message.lower())
+        scale = float(m.group(1) or m.group(2)) if m else 2.0
+        reply, actions = _run_upscale(job_id, {"scale": scale}, pool), ["upscale"]
+    elif models.live():
         reply, actions = _live_turn(job_id, message, history, state, pool)
     else:
         reply, actions = _offline_turn(job_id, message, state, pool)

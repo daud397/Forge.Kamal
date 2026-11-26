@@ -844,6 +844,14 @@ def enhance(job_id: str, instruction: str, action: str = "edit",
     versions = list(state.get("versions") or [])
     step = len(versions) + 1
 
+    # Belt and braces for the chat path: an "edit" whose whole instruction is
+    # "make it sharper" is a sharpen, not a generative redraw.
+    if action == "edit" and not region_png and intent_of(instruction) == "upscale" \
+            and not any(w in instruction.lower() for w in EDIT_WORDS[:9]):
+        store.log(job_id, "That asks for sharpness, so it goes to the sharpening "
+                          "model rather than a generative edit.")
+        action = "upscale"
+
     if action == "upscale":
         result = _upscale(job_id, source, scale, detail, strength)
     elif region_png:
@@ -868,8 +876,11 @@ def enhance(job_id: str, instruction: str, action: str = "edit",
                       "ssim_product": 1.0, "product_coverage": 1.0,
                       "pixels_out_of_tolerance": 0},
             "level": "info",
-            "notes": ["Worked on directly, so there is no source to measure "
-                      "against. Judge this one by eye."],
+            "notes": [(f"Sharpened with the super-resolution model to "
+                       f"{result.width}x{result.height}. The design was not "
+                       "redrawn.") if action == "upscale" else
+                      ("Worked on directly, so there is no source to measure "
+                       "against. Judge this one by eye.")],
             "review": {"usable": True, "issues": [], "fix_instruction": ""}},
     )
     _thumb(job_id)

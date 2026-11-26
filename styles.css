@@ -543,13 +543,13 @@ h1,h2,h3{letter-spacing:-0.025em}
 .lb-btn,.st-btn,.taskmore .act{border-radius:12px}
 
 /* primary: tinted glass, the Apple blue */
-.actions .primary,.taskmore .act.primary,.st-btn.primary,.lb-primary,.send,.st-num{
+.actions .primary,a.act.primary,.taskmore .act.primary,.st-btn.primary,.lb-primary,.send,.st-num{
   background:linear-gradient(180deg,#3a9bff,#0a84ff);
   border:1px solid rgba(255,255,255,.22);
   color:#fff;
   box-shadow:0 6px 20px rgba(10,132,255,.35), inset 0 1px 0 rgba(255,255,255,.35);
 }
-.actions .primary:hover,.st-btn.primary:hover:not(:disabled),.lb-primary:hover,.send:hover{
+.actions .primary:hover,a.act.primary:hover,.st-btn.primary:hover:not(:disabled),.lb-primary:hover,.send:hover{
   background:linear-gradient(180deg,#4aa6ff,#1a8cff);
 }
 .send{border-radius:50%;width:34px;height:34px;flex-basis:34px}
@@ -631,3 +631,4 @@ input[type=range]{accent-color:#0a84ff}
 @media (prefers-reduced-motion:reduce){.status .dot{animation:none}}
 @media (max-width:860px){ .sidebar{background:rgba(16,18,24,.92)} }
 .top .quiet{border-radius:999px;padding:5px 12px}
+a.act.primary{font-weight:600;padding:8px 16px;font-size:13px}
