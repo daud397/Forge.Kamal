@@ -445,7 +445,8 @@ def _guarded(job_id, fn, *args):
 
 # --- Entry point -------------------------------------------------------------
 
-SHARPEN_WORDS = ("sharpen", "sharper", "sharpness", "blurry", "blur", "crisp",
+SHARPEN_WORDS = ("sharpen", "sharper", "sharpness", "sharp ", "maximum resolution",
+                 "highest resolution", "max resolution", "blurry", "blur", "crisp",
                  "clearer", "resolution", "upscale", "up-scale", "hi-res", "hires",
                  "high res", "enlarge", "pixelated", "4k", "improve quality",
                  "better quality", "image quality", "increase quality")
@@ -476,7 +477,8 @@ def respond(job_id: str, message: str, pool) -> dict:
     if wants_sharpen(message) and pipeline.current_image(job_id):
         import re as _re
         m = _re.search(r"(\d(?:\.\d)?)\s*x\b|\bx\s*(\d)", message.lower())
-        scale = float(m.group(1) or m.group(2)) if m else 2.0
+        scale = (float(m.group(1) or m.group(2)) if m
+                 else pipeline.resolution_scale(message) or 2.0)
         reply, actions = _run_upscale(job_id, {"scale": scale}, pool), ["upscale"]
     elif models.live():
         reply, actions = _live_turn(job_id, message, history, state, pool)

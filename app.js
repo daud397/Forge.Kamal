@@ -591,12 +591,23 @@ function finalCard(state) {
   dl.className = "act primary";
   dl.href = fileUrl(state.final_file) + "?full=1&v=" + ver;
   dl.download = "";
-  dl.textContent = "↓ Download full size";
-  dl.title = "Full resolution, lossless PNG, never smaller than 3000px";
+  const px = (state.final_px || "").replace("x", "\u00d7");
+  dl.textContent = "↓ Download full size" + (px ? ` · ${px} PNG` : "");
+  dl.title = "Every pixel, lossless PNG at 300 dpi, never smaller than 3000px";
   acts.appendChild(dl);
+
+  const tif = document.createElement("a");
+  tif.className = "act";
+  tif.href = fileUrl(state.final_file) + "?full=1&fmt=tiff&v=" + ver;
+  tif.download = "";
+  tif.textContent = "↓ Print master (TIFF)";
+  tif.title = "Uncompressed TIFF at 300 dpi: the largest file, for printing and archiving";
+  acts.appendChild(tif);
 
   add(acts, "Sharpen ×2", () => enhance("upscale", 2),
       "Sharper and twice the size. Runs on our server: free, and it does not change the design.");
+  add(acts, "Maximum resolution", () => enhance("upscale", 4),
+      "Sharpen and enlarge 4\u00d7 (up to 8192px) — the biggest, sharpest file Forge can make. Free.");
   add(acts, "Edit image", () =>
     openEditor(fileUrl(state.final_file) + "?w=2048&v=" + ver),
       "Paint an area and say what to change, or change the whole picture");

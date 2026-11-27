@@ -241,7 +241,7 @@ def drafts_for_mode(job_id: str) -> dict:
     return drafts_scratch(job_id) if state.get("mode") == "scratch" else drafts(job_id)
 
 
-def delivery_copy(job_id: str, name: str) -> Path:
+def delivery_copy(job_id: str, name: str, fmt: str = "png") -> Path:
     """A print-and-listing sized copy of a finished image, made once and kept.
 
     The generator tops out at config.FINAL_SIZE. Enlarging past that adds no
@@ -251,7 +251,8 @@ def delivery_copy(job_id: str, name: str) -> Path:
     """
     d = job_dir(job_id)
     src_path = d / name
-    out_path = d / f"delivery_{Path(name).stem}.png"
+    ext = "tif" if fmt == "tiff" else "png"
+    out_path = d / f"delivery_{Path(name).stem}.{ext}"
     if out_path.exists() and out_path.stat().st_mtime >= src_path.stat().st_mtime:
         return out_path
 
@@ -264,7 +265,12 @@ def delivery_copy(job_id: str, name: str) -> Path:
         img = img.filter(ImageFilter.UnsharpMask(radius=1.6, percent=55,
                                                  threshold=3))
 
-    img.save(out_path, "PNG", optimize=False)
+    # 300 dpi in the file, so a print shop opens it at print size rather than
+    # at 72 dpi. TIFF is uncompressed: the print master, as big as the pixels.
+    if ext == "tif":
+        img.save(out_path, "TIFF", dpi=(300, 300))
+    else:
+        img.save(out_path, "PNG", optimize=False, dpi=(300, 300))
     return out_path
 
 
@@ -1141,6 +1147,39 @@ SCENE_WORDS = ("scene", "background", "backdrop", "roomset", "room set",
                "lifestyle", "setting", "studio", "options", "drafts", "variations")
 
 
+RES_ASK = re.compile(
+    r"\b(sharp\w*|resolution|hi-?res|high[- ]res\w*|upscal\w*|crisp\w*|"
+    r"blur\w*|pixelat\w*|[48]k|hd|uhd|enlarg\w*|max(imum)?\s+(size|quality|detail)|"
+    r"high(est)?\s+(quality|detail\w*)|print[- ]?(ready|quality))\b", re.I)
+RES_MAX = re.compile(r"\b(max\w*|highest|largest|biggest|full|best|very\s+high|"
+                     r"ultra|8k|4\s*x|x\s*4|print)\b", re.I)
+
+
+def resolution_scale(note: str) -> float | None:
+    """How far to sharpen-and-enlarge after the image is made, or None if the
+    request said nothing about resolution or sharpness.
+
+    "Need maximum resolution" in a design-transfer request used to be
+    ignored: the transfer ran, the model's 1920px image came back, and the
+    seller got a 2-3MB file no matter what they asked. Now it is followed by
+    the sharpening model - 4x (up to UPSCALE_MAX_EDGE) when they ask for the
+    highest, 2x otherwise."""
+    t = note or ""
+    if not RES_ASK.search(t):
+        return None
+    return 4.0 if RES_MAX.search(t) else 2.0
+
+
+def finish_resolution(job_id: str, note: str) -> None:
+    scale = resolution_scale(note)
+    if not scale:
+        return
+    store.log(job_id, f"You asked for {'the highest' if scale >= 4 else 'a higher'} "
+                      f"resolution, so the finished image now goes through the "
+                      f"sharpening model at {scale:g}x.")
+    enhance(job_id, "", "upscale", scale)
+
+
 def intent_of(note: str) -> str:
     """'upscale', 'edit' or 'scene'."""
     t = (note or "").lower()
@@ -1278,6 +1317,7 @@ def route(job_id: str, note: str) -> None:
                           "driving it.")
         store.update(job_id, intent="transfer")
         transfer(job_id)
+        finish_resolution(job_id, note)
         return
 
     kind = intent_of(note)
@@ -1290,10 +1330,11 @@ def route(job_id: str, note: str) -> None:
                           "from it rather than a new background behind it.")
         store.update(job_id, intent="design")
         design_render(job_id)
+        finish_resolution(job_id, note)
         return
 
     if kind == "upscale":
-        scale = 4.0 if re.search(r"\b4\s*x\b|\bx\s*4\b|\b4k\b", note.lower()) else 2.0
+        scale = resolution_scale(note) or 2.0
         store.log(job_id, "You asked for a sharper, higher-resolution image, so "
                           "this goes straight to the sharpening model - no scenes, "
                           "no redrawing.")
@@ -1306,6 +1347,7 @@ def route(job_id: str, note: str) -> None:
                           "directly - no scenes.")
         store.update(job_id, intent="edit")
         enhance(job_id, note, "edit", 2.0)
+        finish_resolution(job_id, note)
         return
 
     store.update(job_id, intent="scene")
@@ -1469,6 +1511,7 @@ def run_finalise(job_id: str, draft_index: int, instruction: str,
     try:
         with working(job_id):
             finalise(job_id, draft_index, instruction, painted_mask)
+            finish_resolution(job_id, (store.get(job_id) or {}).get("note", ""))
             if presets_wanted:
                 export(job_id, presets_wanted)
     except Exception as exc:

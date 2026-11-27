@@ -184,6 +184,20 @@ def get_job(job_id: str):
     if not state:
         raise HTTPException(404, "No such job.")
     state["busy"] = pipeline.busy(job_id)
+    # The real pixel size of the finished image, shown on the download button
+    # so nobody has to guess whether "full size" is actually full size.
+    if state.get("final_file"):
+        try:
+            from PIL import Image
+            with Image.open(pipeline.job_dir(job_id) / state["final_file"]) as im:
+                w, h = im.size
+            edge = max(w, h)
+            if edge < config.DELIVER_EDGE:
+                k = config.DELIVER_EDGE / edge
+                w, h = round(w * k), round(h * k)
+            state["final_px"] = f"{w}x{h}"
+        except Exception:
+            pass
     return state
 
 
@@ -304,7 +318,7 @@ def chat(job_id: str, message: str = Form(...)):
 
 
 @app.get("/api/jobs/{job_id}/file/{name}")
-def job_file(job_id: str, name: str, full: int = 0, w: int = 0):
+def job_file(job_id: str, name: str, full: int = 0, w: int = 0, fmt: str = "png"):
     if "/" in name or "\\" in name or ".." in name:
         raise HTTPException(400, "Bad filename.")
     if not pipeline.JOB_ID.match(job_id) or not store.get(job_id):
@@ -325,7 +339,9 @@ def job_file(job_id: str, name: str, full: int = 0, w: int = 0):
 
     if full and not name.startswith("export_"):
         try:
-            return FileResponse(pipeline.delivery_copy(job_id, name))
+            out = pipeline.delivery_copy(job_id, name, "tiff" if fmt == "tiff" else "png")
+            stem = name.rsplit(".", 1)[0]
+            return FileResponse(out, filename=f"kamal-forge-{job_id}-{stem}{out.suffix}")
         except Exception:
             pass                       # a bad enlarge should never block a download
     return FileResponse(path)
